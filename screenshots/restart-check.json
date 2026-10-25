@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "Monchel",
+      "hasCanvas": true,
+      "bodyTextLen": 145,
+      "bodyTextHash": "78f652dbd2392c2a94a2d6cfdeb4e474108e19e1eefe7358b6ad259fe3c7babf",
+      "bodyTextPrefix": "ENDLESS RUN Monchel A slow purple tortoise. Jump the gaps and th",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/restart-check.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "Monchel",
+      "hasCanvas": true,
+      "bodyTextLen": 145,
+      "bodyTextHash": "78f652dbd2392c2a94a2d6cfdeb4e474108e19e1eefe7358b6ad259fe3c7babf",
+      "bodyTextPrefix": "ENDLESS RUN Monchel A slow purple tortoise. Jump the gaps and th",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/restart-check-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/restart-check.json"
+}
