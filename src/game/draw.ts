@@ -1,23 +1,23 @@
 /**
  * Course art is still shapes. Monchel is a sprite sheet.
- * Stage 1 (and stages without their own sheet) use the 5-frame run.
+ * Stage 1 uses the 3-frame run. Air holds frame 1.
  * Stage 2 uses the 4-frame rollerskate cycle. Air holds the top-left frame.
  * Stage 3 uses the 4-frame robo-leg run. Air holds frame 1 of that sheet.
  * Anchor: feet on sim.y, shell centered on playerX, facing right.
  * Sprite height is 0.8 of the collision height so he matches the old shell.
  */
-import { crowMotionDrop, lettuceWorldY, METER_K, ROBO_M, speedRange, type Events, type Gear, type Sim } from "./sim";
+import { crowMotionDrop, lettuceWorldY, METER_K, ROBO_M, JET_M, BLUE_M, SKATES_M, SEAGULL_SCALE, SHELL_SLIDE_SCALE, speedRange, FLY_BIRD, FLY_MOUCH, FLY_BODY_W, FLY_BODY_H, eachChunk, type Chunk, type Events, type Gear, type Sim } from "./sim";
 
 const RUN_FPS = 10;
-const BANNER_IN = 0.26;
-const BANNER_HOLD = 1.05;
-const BANNER_OUT = 0.4;
+const BANNER_IN = 0.34;
+const BANNER_HOLD = 0.95;
+const BANNER_OUT = 0.28;
 const BANNER_LIFE = BANNER_IN + BANNER_HOLD + BANNER_OUT;
 
 const STAGE_BANNER: Partial<Record<Gear, string>> = {
   skates: "Skates!",
   robo: "Robo-Legs!",
-  jet: "Jet!",
+  jet: "Jetpack!",
   bluejet: "Afterburner!",
 };
 
@@ -26,6 +26,11 @@ const BANNER_INK: Partial<Record<Gear, string>> = {
   robo: "#f3e6ff",
   jet: "#ffd7b0",
   bluejet: "#c9edff",
+};
+
+const BANNER_NOTE: Partial<Record<Gear, string>> = {
+  robo: "Double jump activated",
+  jet: "Triple Boost activated",
 };
 
 type Sheet = {
@@ -76,15 +81,57 @@ function isReady(sheet: Sheet): boolean {
   return false;
 }
 
-const runSheet = loadSheet(new URL("./monchel-run.png", import.meta.url).href, 5, 620, 389);
-const skateSheet = loadSheet(new URL("./monchel-skates.png", import.meta.url).href, 4, 692, 440);
+const runSheet = loadSheet(`${new URL("./monchel-run.png", import.meta.url).href}?v=9`, 3, 534, 384);
+runSheet.air = 0;
+const skateSheet = loadSheet(`${new URL("./monchel-skates.png", import.meta.url).href}?v=5`, 4, 692, 440);
+skateSheet.air = 0;
 const roboSheet = loadSheet(
   `${new URL("./monchel-robo.png", import.meta.url).href}?v=3`,
   4,
   560,
   346,
 );
-const jetSheet = loadSheet(new URL("./monchel-jet.png", import.meta.url).href, 1, 899, 775);
+const jetOffSheet = loadSheet(`${new URL("./monchel-jet-off.png", import.meta.url).href}?v=2`, 1, 858, 686);
+const jetOnSheet = loadSheet(`${new URL("./monchel-jet-on.png", import.meta.url).href}?v=2`, 1, 858, 686);
+const ratSheet = loadSheet(`${new URL("./rat.png", import.meta.url).href}?v=1`, 4, 679, 442);
+const coyoteSheet = loadSheet(`${new URL("./coyote.png", import.meta.url).href}?v=1`, 5, 502, 482);
+const shellSlideSheet = loadSheet(`${new URL("./shell-slide.png", import.meta.url).href}?v=1`, 1, 699, 457);
+
+function loadStill(url: string, urgent = false): HTMLImageElement | null {
+  if (typeof Image === "undefined") return null;
+  const img = new Image();
+  img.decoding = urgent ? "sync" : "async";
+  if (urgent) img.setAttribute("fetchpriority", "high");
+  img.src = url;
+  if (urgent) void img.decode().catch(() => {});
+  return img;
+}
+
+const rockSm = loadStill(new URL("./rock-sm.png", import.meta.url).href);
+const rockMd = loadStill(new URL("./rock-md.png", import.meta.url).href);
+const rockLg = loadStill(new URL("./rock-lg.png", import.meta.url).href);
+const coneImg = loadStill(`${new URL("./cone.png", import.meta.url).href}?v=1`);
+const streetImg = loadStill(`${new URL("./street.png", import.meta.url).href}?v=4`);
+const treesDay = loadStill(`${new URL("./trees-day.jpg", import.meta.url).href}?v=3`, true);
+const treesDusk = loadStill(`${new URL("./trees-dusk.jpg", import.meta.url).href}?v=1`);
+const labsImg = loadStill(`${new URL("./labs-edge.webp", import.meta.url).href}?v=1`, true);
+const emoImg = loadStill(`${new URL("./emo.png", import.meta.url).href}?v=1`);
+/** Glass Heart is the emo track. The cameo only exists while it is the active song. */
+const EMO_TRACK = 2;
+/** Monchel is drawn at 0.8 of playerH. This cameo stands a little taller. */
+const EMO_H = 0.92;
+
+let activeTrack = 0;
+export function setActiveTrack(index: number): void {
+  activeTrack = Number.isFinite(index) ? index : 0;
+}
+
+let emoLock: { seed: number; h: number; x: number } | null = null;
+
+function stillReady(img: HTMLImageElement | null): img is HTMLImageElement {
+  return !!img && img.complete && img.naturalWidth > 0;
+}
+const blueSheet = loadSheet(`${new URL("./monchel-bluejet.png", import.meta.url).href}?v=5`, 1, 1300, 729);
 
 const CROW_FRAMES = 5;
 let crowImg: HTMLImageElement | null = null;
@@ -99,12 +146,37 @@ if (typeof Image !== "undefined") {
   crowImg = crow;
 }
 
+const GULL_FRAMES = 5;
+let gullImg: HTMLImageElement | null = null;
+let gullReady = false;
+if (typeof Image !== "undefined") {
+  const gull = new Image();
+  gull.decoding = "async";
+  gull.onload = () => {
+    gullReady = true;
+  };
+  gull.src = `${new URL("./seagull.png", import.meta.url).href}?v=2`;
+  gullImg = gull;
+}
+
 function spriteFor(sim: Sim): { sheet: Sheet; frame: number } {
-  const running = sim.phase === "run" && sim.grounded && sim.gear !== "jet";
+  const running = sim.phase === "run" && sim.grounded && sim.gear !== "jet" && sim.gear !== "bluejet";
+  const thrusting = sim.phase !== "dead" && sim.gear === "jet" && !sim.grounded && sim.vy < 0;
   const want =
-    sim.gear === "jet" ? jetSheet : sim.gear === "robo" ? roboSheet : sim.gear === "skates" ? skateSheet : runSheet;
+    sim.gear === "bluejet"
+      ? blueSheet
+      : sim.gear === "jet"
+        ? thrusting
+          ? jetOnSheet
+          : jetOffSheet
+        : sim.gear === "robo"
+          ? roboSheet
+          : sim.gear === "skates"
+            ? skateSheet
+            : runSheet;
   const sheet = isReady(want) || !isReady(runSheet) ? want : runSheet;
-  const frame = running ? Math.floor(sim.anim * RUN_FPS) % sheet.frames : sheet.air;
+  const fps = sheet === runSheet ? 5 : RUN_FPS;
+  const frame = running ? Math.floor(sim.anim * fps) % sheet.frames : sheet.air;
   return { sheet, frame };
 }
 
@@ -120,8 +192,10 @@ const DIRT = "#5a3d2c";
 const DIRT_DARK = "#3a261c";
 const PIT = "#10161e";
 const ROAD = "#d7dde8";
+const ROAD_STAGE3 = "#b7c1d0";
 const ROAD_DARK = "#2c3340";
 const ROAD_CURB = "#eef2f7";
+const ROAD_CURB_STAGE3 = "#d5dce6";
 const NEON = ["#ff2d95", "#00f0ff", "#d06bff", "#ff9a00", "#39ff8a", "#ff5a1f"];
 const SHELL_LITE = "#b79ae6";
 const BARRIER = "#ffe14a";
@@ -129,8 +203,8 @@ const BARRIER_DARK = "#e0a800";
 const BARRIER_LITE = "#fff6b0";
 const FLAME = "#ffb15a";
 const FLAME_CORE = "#fff1c9";
-const BLUE_FLAME = "#4eb6ff";
-const BLUE_CORE = "#eaf6ff";
+const BLUE_FLAME = "#1f6dff";
+const BLUE_CORE = "#7ec8ff";
 const FLOATER = "#2a2144";
 const FLOATER_EDGE = "#d9c6ff";
 
@@ -180,6 +254,8 @@ export type Fx = {
   reduced: boolean;
   banner: Gear | null;
   bannerT: number;
+  hint: string | null;
+  hintT: number;
 };
 
 export type View = { cssW: number; cssH: number; dpr: number };
@@ -204,6 +280,8 @@ export function createFx(reduced: boolean): Fx {
     reduced,
     banner: null,
     bannerT: 0,
+    hint: null,
+    hintT: 0,
   };
 }
 
@@ -241,11 +319,25 @@ export function pumpFx(fx: Fx, dt: number, sim: Sim, events: Events): void {
         fx,
         "dust",
         sim.worldX + sim.shift + (Math.random() - 0.3) * sim.layout.playerW,
-        sim.layout.groundY,
+        sim.y,
         (Math.random() - 0.7) * 80,
         -40 - Math.random() * 70,
         0.35 + Math.random() * 0.2,
         2 + Math.random() * 3,
+      );
+    }
+  }
+  if (events.slide) {
+    for (let i = 0; i < 8; i++) {
+      emit(
+        fx,
+        "dust",
+        sim.worldX + sim.shift - sim.layout.playerW * 0.2,
+        sim.y,
+        -50 - Math.random() * 90,
+        -16 - Math.random() * 24,
+        0.28,
+        2 + Math.random() * 2.4,
       );
     }
   }
@@ -279,7 +371,7 @@ export function pumpFx(fx: Fx, dt: number, sim: Sim, events: Events): void {
         fx,
         "dust",
         sim.worldX + sim.shift - sim.layout.playerW * 0.35,
-        sim.layout.groundY,
+        sim.y,
         -30 - Math.random() * (sim.gear === "bluejet" ? 90 : 40),
         -20 - Math.random() * 30,
         0.28,
@@ -301,6 +393,17 @@ export function pumpFx(fx: Fx, dt: number, sim: Sim, events: Events): void {
   if (fx.banner) {
     fx.bannerT += dt;
     if (fx.bannerT >= BANNER_LIFE) fx.banner = null;
+  }
+  if (events.gear === "bluejet") {
+    const touch =
+      typeof window !== "undefined" &&
+      (window.matchMedia("(pointer: coarse)").matches || window.matchMedia("(hover: none)").matches);
+    fx.hint = touch ? "Press and hold - up or down" : "Use cursor/mouse - up or down";
+    fx.hintT = 0;
+  }
+  if (fx.hint) {
+    fx.hintT += dt;
+    if (fx.hintT >= 2.9) fx.hint = null;
   }
 
   if (sim.phase === "run" && (sim.gear === "jet" || sim.gear === "bluejet")) {
@@ -346,6 +449,65 @@ function chunkOnStreet(sim: Sim, x: number): boolean {
 
 function worldToScreen(sim: Sim, x: number): number {
   return x - sim.worldX + sim.layout.playerX;
+}
+
+function emoWorldX(sim: Sim): number | null {
+  const L = sim.layout;
+  if (emoLock && emoLock.seed === sim.seed && emoLock.h === L.playerH) return emoLock.x;
+  const unit = L.playerH * METER_K;
+  const meters = 14 + hash(sim.seed * 19 + 7) * (SKATES_M - 26);
+  const want = unit * meters;
+  const metersOf = (x: number) => Math.max(0, x) / unit;
+  const found: { c: Chunk | null } = { c: null };
+  eachChunk(sim, (c) => {
+    if (!found.c && want >= c.x && want < c.x + c.w) found.c = c;
+  });
+  const cover = found.c;
+  if (!cover) return null;
+  let x = want;
+  if (cover.gap) {
+    const nearest: { c: Chunk | null; d: number } = { c: null, d: Infinity };
+    eachChunk(sim, (c) => {
+      if (c.gap) return;
+      const mid = c.x + c.w * 0.5;
+      const m = metersOf(mid);
+      if (m < 8 || m >= SKATES_M) return;
+      const d = Math.abs(mid - want);
+      if (d < nearest.d) {
+        nearest.d = d;
+        nearest.c = c;
+      }
+    });
+    const best = nearest.c;
+    if (!best || nearest.d > unit * 16) return null;
+    x = best.x + Math.min(best.w * 0.75, Math.max(best.w * 0.25, want - best.x));
+  } else if (cover.barrierH > 0) {
+    const barL = cover.x + cover.barrierOff;
+    const barR = barL + Math.max(cover.barrierW, 8);
+    if (x > barL - 12 && x < barR + 12) {
+      const left = barL - cover.x;
+      const right = cover.x + cover.w - barR;
+      x = left >= right ? cover.x + Math.max(18, left * 0.55) : barR + Math.max(18, right * 0.45);
+    }
+  }
+  if (metersOf(x) < 4 || metersOf(x) >= SKATES_M) return null;
+  emoLock = { seed: sim.seed, h: L.playerH, x };
+  return x;
+}
+
+function drawEmoCameo(ctx: CanvasRenderingContext2D, sim: Sim): void {
+  if (activeTrack !== EMO_TRACK || !stillReady(emoImg)) return;
+  const x = emoWorldX(sim);
+  if (x == null) return;
+  const L = sim.layout;
+  const h = L.playerH * EMO_H;
+  const w = h * (emoImg.naturalWidth / emoImg.naturalHeight);
+  const sx = worldToScreen(sim, x);
+  if (sx < -w || sx > L.w + w) return;
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(emoImg, sx - w / 2, L.groundY - h, w, h);
+  ctx.restore();
 }
 
 function drawNeonSky(ctx: CanvasRenderingContext2D, sim: Sim): void {
@@ -416,6 +578,92 @@ function drawBuildings(ctx: CanvasRenderingContext2D, sim: Sim): void {
   }
 }
 
+/** Horizon in the tree strips, and the sidewalk in the labs plate, as fractions of height. */
+const TREE_LINE = 573 / 816;
+const LABS_LINE = 1340 / 1728;
+/** Extra lift so the tree canopy meets the foliage on the Labs plate. */
+const TREE_RAISE = 84 / 816;
+const EARLY_PARALLAX = 0.46;
+
+function drawLoopStrip(
+  ctx: CanvasRenderingContext2D,
+  sim: Sim,
+  img: HTMLImageElement,
+  lineFrac: number,
+  scroll: number,
+  raise = 0,
+): { drawH: number; drawW: number; top: number } | null {
+  if (!stillReady(img)) return null;
+  const L = sim.layout;
+  const line = L.groundY - 8;
+  const drawH = line / lineFrac;
+  const top = line - lineFrac * drawH - raise;
+  const drawW = drawH * (img.naturalWidth / img.naturalHeight);
+  let x = -(scroll % drawW);
+  if (x > 0) x -= drawW;
+  while (x < L.w + 2) {
+    ctx.drawImage(img, x, top, drawW, drawH);
+    x += drawW;
+  }
+  return { drawH, drawW, top };
+}
+
+function drawEarlyBackdrop(ctx: CanvasRenderingContext2D, sim: Sim): boolean {
+  const L = sim.layout;
+  const meters = sim.worldX / (L.playerH * METER_K);
+  if (meters >= ROBO_M) return false;
+  const stage2 = meters >= SKATES_M;
+  const trees = stage2 ? treesDusk : treesDay;
+  if (!stillReady(trees)) return false;
+  if (!stage2 && !stillReady(labsImg)) return false;
+  const scroll = sim.worldX * EARLY_PARALLAX;
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  drawLoopStrip(ctx, sim, trees, TREE_LINE, scroll, (L.groundY - 8) / TREE_LINE * TREE_RAISE);
+  if (!stage2 && stillReady(labsImg)) {
+    const line = L.groundY - 8;
+    const drawH = line / LABS_LINE;
+    const drawW = drawH * (labsImg.naturalWidth / labsImg.naturalHeight);
+    const x = -scroll;
+    if (x < L.w && x + drawW > -4) {
+      ctx.drawImage(labsImg, x, line - LABS_LINE * drawH, drawW, drawH);
+    }
+  }
+  ctx.restore();
+  return true;
+}
+
+function streetBand(sim: Sim): number {
+  const meters = sim.worldX / (sim.layout.playerH * METER_K);
+  const inn = Math.max(0, Math.min(1, (meters - ROBO_M) / 8));
+  const out = Math.max(0, Math.min(1, (BLUE_M - meters) / 10));
+  return inn * out;
+}
+
+/** Sidewalk/curb line in street.png, as a fraction of the strip height. */
+const STREET_CURB = 804 / 912;
+
+function drawStreetStrip(ctx: CanvasRenderingContext2D, sim: Sim, band: number): void {
+  if (band <= 0 || !stillReady(streetImg)) return;
+  const L = sim.layout;
+  const img = streetImg;
+  const curb = L.groundY - 8;
+  const drawH = L.groundY * 0.985;
+  const top = curb - STREET_CURB * drawH;
+  const drawW = drawH * (img.naturalWidth / img.naturalHeight);
+  const span = drawW;
+  let x = -(sim.worldX * 0.5) % span;
+  if (x > 0) x -= span;
+  ctx.save();
+  ctx.globalAlpha *= band;
+  ctx.imageSmoothingEnabled = true;
+  while (x < L.w + 2) {
+    ctx.drawImage(img, x, top, drawW, drawH);
+    x += span;
+  }
+  ctx.restore();
+}
+
 function drawStreetTrees(ctx: CanvasRenderingContext2D, sim: Sim): void {
   const L = sim.layout;
   const shift = sim.worldX * 0.34;
@@ -480,28 +728,42 @@ export function draw(ctx: CanvasRenderingContext2D, view: View, sim: Sim, fx: Fx
   ctx.fillStyle = sky;
   ctx.fillRect(-40, -80, L.w + 80, L.groundY + 80);
 
-  ctx.fillStyle = SUN;
-  ctx.beginPath();
-  ctx.arc(L.w * 0.74, L.groundY * 0.42, L.playerH * 0.42, 0, Math.PI * 2);
-  ctx.fill();
-
-  hills(ctx, sim, HILL_FAR, L.playerH * 0.55, 0.0045, 0.18, L.groundY * 0.72);
-  hills(ctx, sim, HILL_NEAR, L.playerH * 0.38, 0.007, 0.36, L.groundY * 0.86);
-  clouds(ctx, sim);
+  const early = drawEarlyBackdrop(ctx, sim);
+  const stage1 = sim.worldX / (L.playerH * METER_K) < SKATES_M;
+  if (!early) {
+    ctx.fillStyle = SUN;
+    ctx.beginPath();
+    ctx.arc(L.w * 0.74, L.groundY * 0.42, L.playerH * 0.42, 0, Math.PI * 2);
+    ctx.fill();
+    hills(ctx, sim, HILL_FAR, L.playerH * 0.55, 0.0045, 0.18, L.groundY * 0.72);
+    hills(ctx, sim, HILL_NEAR, L.playerH * 0.38, 0.007, 0.36, L.groundY * 0.86);
+  } else if (!stage1) {
+    ctx.fillStyle = SUN;
+    ctx.beginPath();
+    ctx.arc(L.w * 0.74 - sim.worldX * 0.12, L.groundY * 0.42, L.playerH * 0.42, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  clouds(ctx, sim, stage1 && early);
 
   const mix = streetMix(sim);
+  const band = streetBand(sim);
   if (mix > 0) {
     ctx.save();
     ctx.globalAlpha = mix;
     drawNeonSky(ctx, sim);
     clouds(ctx, sim);
-    drawBuildings(ctx, sim);
-    drawStreetTrees(ctx, sim);
+    const far = mix * (1 - band);
+    if (far > 0.02) {
+      ctx.globalAlpha = far;
+      drawBuildings(ctx, sim);
+      drawStreetTrees(ctx, sim);
+    }
     ctx.restore();
   }
+  drawStreetStrip(ctx, sim, band);
 
   eachVisible(sim, (c) => {
-    if (!c.gap) return;
+    if (!c.gap || (sim.blueClear > 0 && c.x < sim.blueClear)) return;
     const street = chunkOnStreet(sim, c.x);
     const sx = worldToScreen(sim, c.x);
     ctx.fillStyle = street ? "#3a4254" : PIT;
@@ -514,14 +776,15 @@ export function draw(ctx: CanvasRenderingContext2D, view: View, sim: Sim, fx: Fx
   });
 
   eachVisible(sim, (c) => {
-    if (c.gap) return;
+    if (c.gap && !(sim.blueClear > 0 && c.x < sim.blueClear)) return;
     const sx = worldToScreen(sim, c.x);
     if (chunkOnStreet(sim, c.x)) {
+      const stage3 = chunkStage(sim, c.x) === 3;
       ctx.fillStyle = ROAD_DARK;
       ctx.fillRect(sx, L.groundY, c.w, L.h - L.groundY + 80);
-      ctx.fillStyle = ROAD;
+      ctx.fillStyle = stage3 ? ROAD_STAGE3 : ROAD;
       ctx.fillRect(sx, L.groundY - 10, c.w, 16);
-      ctx.fillStyle = ROAD_CURB;
+      ctx.fillStyle = stage3 ? ROAD_CURB_STAGE3 : ROAD_CURB;
       ctx.fillRect(sx, L.groundY - 10, c.w, 3);
       return;
     }
@@ -546,14 +809,27 @@ export function draw(ctx: CanvasRenderingContext2D, view: View, sim: Sim, fx: Fx
   });
 
   eachVisible(sim, (c) => {
+    if (sim.blueClear > 0 && c.x < sim.blueClear) return;
     drawPlatform(ctx, sim, c.x + c.platOff, c.platDrop, c.platW);
     drawPlatform(ctx, sim, c.x + c.plat2Off, c.plat2Drop, c.plat2W);
+    drawPlatform(ctx, sim, c.x + c.plat3Off, c.plat3Drop, c.plat3W);
+    drawPlatform(ctx, sim, c.x + c.plat4Off, c.plat4Drop, c.plat4W);
   });
 
   eachVisible(sim, (c) => {
+    if (sim.blueClear > 0 && c.x < sim.blueClear) return;
     if (c.barrierH <= 0) return;
     const sx = worldToScreen(sim, c.x + c.barrierOff);
-    const by = L.groundY - c.barrierH;
+    const feet = L.groundY - c.barrierDrop;
+    const by = feet - c.barrierH;
+    const meters = Math.max(0, c.x) / (L.playerH * METER_K);
+    if (meters < ROBO_M && drawRock(ctx, sx, c.barrierW, c.barrierH, feet, L.playerH)) return;
+    if (meters >= ROBO_M && meters < BLUE_M) {
+      const bw = L.playerH * 0.3;
+      const bh = L.playerH * 0.68;
+      const csx = sx + c.barrierW / 2 - bw / 2;
+      if (drawCone(ctx, csx, bw, bh, feet)) return;
+    }
     ctx.fillStyle = BARRIER_DARK;
     round(ctx, sx + 3, by + 4, c.barrierW, c.barrierH);
     ctx.fill();
@@ -564,18 +840,27 @@ export function draw(ctx: CanvasRenderingContext2D, view: View, sim: Sim, fx: Fx
     ctx.fillRect(sx + 3, by + 3, c.barrierW - 6, Math.max(3, c.barrierH * 0.18));
   });
 
+  drawRats(ctx, sim);
+  drawCoyotes(ctx, sim);
+
   eachVisible(sim, (c) => {
+    if (sim.blueClear > 0 && c.x < sim.blueClear) return;
+    if (c.flyKind > 0) drawFlightFoe(ctx, sim, c);
     const gate = c.air2W > 0 && c.air2H > 0;
     if (gate) {
       drawFloater(ctx, sim, c.x + c.airOff, c.airDrop, c.airW, c.airH);
       drawFloater(ctx, sim, c.x + c.air2Off, c.air2Drop, c.air2W, c.air2H);
     } else {
       const drop = crowMotionDrop(c, sim.runT, L.playerH);
-      drawCrow(ctx, sim, c.x + c.airOff, drop, c.airW, c.airH);
+      const meters = Math.max(0, c.x + c.airOff) / (L.playerH * METER_K);
+      if (meters >= BLUE_M) return;
+      if (meters >= ROBO_M) drawSeagull(ctx, sim, c.x + c.airOff, drop, c.airW, c.airH);
+      else drawCrow(ctx, sim, c.x + c.airOff, drop, c.airW, c.airH);
     }
   });
 
   drawLettuce(ctx, sim);
+  drawEmoCameo(ctx, sim);
 
   drawParticles(ctx, sim, fx, false);
   drawMonchel(ctx, sim, fx);
@@ -606,6 +891,7 @@ export function draw(ctx: CanvasRenderingContext2D, view: View, sim: Sim, fx: Fx
   }
 
   drawStageBanner(ctx, sim, fx);
+  drawFlightHint(ctx, sim, fx);
 }
 
 function drawStageBanner(ctx: CanvasRenderingContext2D, sim: Sim, fx: Fx): void {
@@ -616,24 +902,29 @@ function drawStageBanner(ctx: CanvasRenderingContext2D, sim: Sim, fx: Fx): void 
   const t = fx.bannerT;
   let alpha = 1;
   let scale = 1;
-  let rise = 0;
   if (t < BANNER_IN) {
     const u = t / BANNER_IN;
-    const ease = 1 - (1 - u) ** 3;
-    alpha = ease;
-    const pop = fx.reduced ? 1 : 1 + Math.sin(u * Math.PI) * 0.14;
-    scale = (0.55 + 0.45 * ease) * pop;
+    alpha = Math.min(1, u * 2);
+    if (fx.reduced) {
+      scale = 0.86 + 0.14 * u;
+    } else if (u < 0.7) {
+      const p = u / 0.7;
+      scale = 0.32 + 0.92 * (1 - (1 - p) ** 3);
+    } else {
+      const p = (u - 0.7) / 0.3;
+      scale = 1.24 - 0.24 * (1 - (1 - p) ** 2);
+    }
   } else if (t > BANNER_IN + BANNER_HOLD) {
     const u = Math.min(1, (t - BANNER_IN - BANNER_HOLD) / BANNER_OUT);
-    alpha = 1 - u;
-    scale = 1 - u * 0.08;
-    rise = -L.playerH * 0.28 * u * u;
+    const ease = u * u;
+    alpha = 1 - ease;
+    scale = 1 - ease * 0.45;
   }
   if (alpha <= 0) return;
 
   // Just above a full jump, which lands in the upper part of the play field.
-  const y = Math.max(L.playerH * 0.95, L.groundY - L.playerH * 3.05) + rise;
-  let size = L.playerH * 0.72;
+  const y = Math.max(L.playerH * 0.9, L.groundY - L.playerH * 3.25);
+  let size = L.playerH * 1.05;
   ctx.save();
   ctx.font = `700 ${size}px Outfit, "Avenir Next", system-ui, sans-serif`;
   const wide = ctx.measureText(label).width;
@@ -651,8 +942,8 @@ function drawStageBanner(ctx: CanvasRenderingContext2D, sim: Sim, fx: Fx): void 
   ctx.strokeText(label, 0, 0);
   ctx.fillStyle = BANNER_INK[fx.banner] ?? "#f4efe4";
   ctx.fillText(label, 0, 0);
-  if (fx.banner === "robo") {
-    const note = "Double jump activated";
+  const note = BANNER_NOTE[fx.banner];
+  if (note) {
     const noteSize = size * 0.38;
     ctx.font = `600 ${noteSize}px Outfit, "Avenir Next", system-ui, sans-serif`;
     ctx.lineWidth = Math.max(3, noteSize * 0.2);
@@ -662,6 +953,167 @@ function drawStageBanner(ctx: CanvasRenderingContext2D, sim: Sim, fx: Fx): void 
     ctx.fillText(note, 0, size * 0.78);
   }
   ctx.restore();
+}
+
+function drawFlightHint(ctx: CanvasRenderingContext2D, sim: Sim, fx: Fx): void {
+  if (!fx.hint) return;
+  const L = sim.layout;
+  const t = fx.hintT;
+  const fadeIn = 0.18;
+  const hold = 2.25;
+  let alpha = 1;
+  let scale = 1;
+  if (t < fadeIn) {
+    const u = t / fadeIn;
+    alpha = u;
+    scale = 0.92 + 0.08 * u;
+  } else if (t > fadeIn + hold) {
+    const u = Math.min(1, (t - fadeIn - hold) / 0.45);
+    alpha = 1 - u;
+    scale = 1 - u * 0.04;
+  }
+  if (alpha <= 0) return;
+  let size = L.playerH * 0.42;
+  ctx.save();
+  ctx.font = `700 ${size}px Outfit, "Avenir Next", system-ui, sans-serif`;
+  const wide = ctx.measureText(fx.hint).width;
+  const limit = L.w * 0.9;
+  if (wide > limit) size *= limit / wide;
+  ctx.translate(L.w * 0.5, L.h * 0.16);
+  ctx.scale(scale, scale);
+  ctx.globalAlpha = alpha;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineJoin = "round";
+  ctx.font = `700 ${size}px Outfit, "Avenir Next", system-ui, sans-serif`;
+  ctx.lineWidth = Math.max(4, size * 0.16);
+  ctx.strokeStyle = "#121820";
+  ctx.strokeText(fx.hint, 0, 0);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillText(fx.hint, 0, 0);
+  ctx.restore();
+}
+
+function drawStunHalo(ctx: CanvasRenderingContext2D, spriteH: number, stun: number, spin: number): void {
+  const r = spriteH * 0.36;
+  const alpha = Math.min(0.9, (stun / 0.3) * 0.75);
+  ctx.save();
+  ctx.translate(0, -spriteH - spriteH * 0.12);
+  ctx.rotate(spin);
+  ctx.scale(0.42 + 0.58 * Math.abs(Math.cos(spin)), 0.34);
+  ctx.strokeStyle = `rgba(255, 214, 64, ${alpha})`;
+  ctx.lineWidth = Math.max(1.25, spriteH * 0.04);
+  ctx.beginPath();
+  ctx.ellipse(0, 0, r, r, 0, 0.2, Math.PI * 1.65);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawRats(ctx: CanvasRenderingContext2D, sim: Sim): void {
+  if (!isReady(ratSheet) || !ratSheet.img) return;
+  const L = sim.layout;
+  const h = L.playerH * 0.52;
+  const aspect = 679 / 442;
+  const w = h * aspect;
+  const frame = Math.floor(sim.runT * 8) % 4;
+  const m = ctx.getTransform();
+  const dw = Math.max(1, Math.round(Math.abs(m.a) * w));
+  const dh = Math.max(1, Math.round(Math.abs(m.d) * h));
+  const bitmap = frameBitmap(ratSheet, frame, dw, dh);
+  if (!bitmap) return;
+  for (const rat of sim.rats) {
+    const sx = worldToScreen(sim, rat.x);
+    if (sx < -w || sx > L.w + w) continue;
+    const anchorX = Math.round(sx);
+    const anchorY = Math.round(rat.feet || L.groundY);
+    const feetX = m.a * anchorX + m.c * anchorY + m.e;
+    const feetY = m.b * anchorX + m.d * anchorY + m.f;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.translate(Math.floor(feetX), Math.floor(feetY));
+    if (rat.dir < 0) ctx.scale(-1, 1);
+    ctx.drawImage(bitmap, Math.floor(-dw / 2), -dh);
+    if (rat.stun > 0) drawStunHalo(ctx, dh, rat.stun, sim.runT * 9);
+    ctx.restore();
+  }
+}
+
+function chunkStage(sim: Sim, x: number): number {
+  const meters = Math.max(0, x) / (sim.layout.playerH * METER_K);
+  if (meters >= BLUE_M) return 5;
+  if (meters >= JET_M) return 4;
+  if (meters >= ROBO_M) return 3;
+  if (meters >= SKATES_M) return 2;
+  return 1;
+}
+
+function drawCone(
+  ctx: CanvasRenderingContext2D,
+  sx: number,
+  bw: number,
+  bh: number,
+  groundY: number,
+): boolean {
+  if (!stillReady(coneImg)) return false;
+  const dh = bh;
+  const dw = dh * (coneImg.naturalWidth / coneImg.naturalHeight);
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(coneImg, sx + bw / 2 - dw / 2, groundY - dh, dw, dh);
+  ctx.restore();
+  return true;
+}
+
+function drawRock(
+  ctx: CanvasRenderingContext2D,
+  sx: number,
+  bw: number,
+  bh: number,
+  groundY: number,
+  playerH: number,
+): boolean {
+  const k = bh / playerH;
+  const img = k < 0.44 ? rockSm : k < 0.6 ? rockMd : rockLg;
+  const rock = stillReady(img) ? img : stillReady(rockSm) ? rockSm : null;
+  if (!rock) return false;
+  const dh = bh;
+  const dw = dh * (rock.naturalWidth / rock.naturalHeight);
+  ctx.save();
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(rock, sx + bw / 2 - dw / 2, groundY - dh, dw, dh);
+  ctx.restore();
+  return true;
+}
+
+function drawCoyotes(ctx: CanvasRenderingContext2D, sim: Sim): void {
+  if (!isReady(coyoteSheet) || !coyoteSheet.img) return;
+  const L = sim.layout;
+  const h = L.playerH * 0.816;
+  const aspect = 502 / 482;
+  const w = h * aspect;
+  const m = ctx.getTransform();
+  const dw = Math.max(1, Math.round(Math.abs(m.a) * w));
+  const dh = Math.max(1, Math.round(Math.abs(m.d) * h));
+  for (const coyote of sim.coyotes) {
+    const sx = worldToScreen(sim, coyote.x);
+    if (sx < -w || sx > L.w + w) continue;
+    const frame = Math.floor(coyote.anim * 8) % 5;
+    const bitmap = frameBitmap(coyoteSheet, frame, dw, dh);
+    if (!bitmap) continue;
+    const anchorX = Math.round(sx);
+    const anchorY = Math.round(coyote.feet || L.groundY);
+    const feetX = m.a * anchorX + m.c * anchorY + m.e;
+    const feetY = m.b * anchorX + m.d * anchorY + m.f;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.translate(Math.floor(feetX), Math.floor(feetY));
+    if (coyote.dir < 0) ctx.scale(-1, 1);
+    ctx.drawImage(bitmap, Math.floor(-dw / 2), -dh);
+    if (coyote.stun > 0) drawStunHalo(ctx, dh, coyote.stun, sim.runT * 9);
+    ctx.restore();
+  }
 }
 
 function drawPlatform(
@@ -687,6 +1139,14 @@ function drawPlatform(
     ctx.fillRect(sx, top, w, cap);
     ctx.fillStyle = ROAD_CURB;
     ctx.fillRect(sx, top, w, Math.min(3, cap));
+    if (chunkStage(sim, x) === 3) {
+      ctx.save();
+      ctx.shadowColor = "#b44dff";
+      ctx.shadowBlur = 7;
+      ctx.fillStyle = "#d9a6ff";
+      ctx.fillRect(sx + 1, top, Math.max(0, w - 2), 2);
+      ctx.restore();
+    }
     return;
   }
   ctx.fillStyle = DIRT;
@@ -714,6 +1174,49 @@ function crowImage(): HTMLImageElement | null {
   return crowReady && img.naturalWidth > 0 ? img : null;
 }
 
+function gullImage(): HTMLImageElement | null {
+  const img = gullImg;
+  if (!img) return null;
+  if (!gullReady && img.complete && img.naturalWidth > 0) gullReady = true;
+  return gullReady && img.naturalWidth > 0 ? img : null;
+}
+
+function drawSeagull(
+  ctx: CanvasRenderingContext2D,
+  sim: Sim,
+  x: number,
+  drop: number,
+  w: number,
+  h: number,
+): void {
+  if (w <= 0 || h <= 0 || drop <= 0) return;
+  const img = gullImage();
+  if (!img) return;
+  const L = sim.layout;
+  const bottom = L.groundY - drop;
+  const midX = worldToScreen(sim, x) + w / 2;
+  const midY = bottom - h / 2;
+  const drawH = L.playerH * 1.05 * 0.64 * SEAGULL_SCALE * 1.2;
+  const frameW = img.width / GULL_FRAMES;
+  const drawW = drawH * (frameW / img.height);
+  const spin = Math.floor(sim.anim * 8 + Math.abs(x) * 0.013);
+  const frame = ((spin % GULL_FRAMES) + GULL_FRAMES) % GULL_FRAMES;
+  ctx.save();
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(
+    img,
+    Math.round(frame * frameW),
+    0,
+    frameW,
+    img.height,
+    Math.round(midX - drawW / 2),
+    Math.round(midY - drawH / 2),
+    Math.round(drawW),
+    Math.round(drawH),
+  );
+  ctx.restore();
+}
+
 function drawCrow(
   ctx: CanvasRenderingContext2D,
   sim: Sim,
@@ -732,7 +1235,7 @@ function drawCrow(
   const bottom = L.groundY - drop;
   const midX = worldToScreen(sim, x) + w / 2;
   const midY = bottom - h / 2;
-  const drawH = L.playerH * 1.05 * 0.8;
+  const drawH = L.playerH * 1.05 * 0.64;
   const frameW = img.width / CROW_FRAMES;
   const drawW = drawH * (frameW / img.height);
   const spin = Math.floor(sim.anim * 8 + Math.abs(x) * 0.013);
@@ -784,6 +1287,54 @@ function drawFloater(
   ctx.closePath();
   ctx.fill();
   ctx.globalAlpha = 1;
+}
+
+/** Placeholder until the bird and Mouch sprites arrive. */
+function drawFlightFoe(ctx: CanvasRenderingContext2D, sim: Sim, c: Sim["slots"][number]): void {
+  const L = sim.layout;
+  const bodyW = L.playerH * FLY_BODY_W;
+  const bodyH = L.playerH * FLY_BODY_H;
+  const sx = worldToScreen(sim, c.x + c.flyOff);
+  const bottom = L.groundY - c.flyDrop;
+  const midX = sx + bodyW / 2;
+  const midY = bottom - bodyH / 2;
+  const flap = Math.sin(sim.anim * 14 + c.x * 0.01);
+  ctx.save();
+  if (c.flyKind === FLY_BIRD) {
+    ctx.fillStyle = "#8aa0ad";
+    ctx.beginPath();
+    ctx.moveTo(midX - bodyW * 0.02, midY);
+    ctx.lineTo(midX - bodyW * 0.62, midY - bodyH * (0.2 + flap * 0.7));
+    ctx.lineTo(midX + bodyW * 0.2, midY + bodyH * 0.05);
+    ctx.fill();
+    ctx.fillStyle = "#e7eef1";
+    ctx.beginPath();
+    ctx.ellipse(midX, midY, bodyW * 0.38, bodyH * 0.36, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#e2b15a";
+    ctx.beginPath();
+    ctx.moveTo(midX - bodyW * 0.34, midY - bodyH * 0.02);
+    ctx.lineTo(midX - bodyW * 0.62, midY + bodyH * 0.08);
+    ctx.lineTo(midX - bodyW * 0.34, midY + bodyH * 0.18);
+    ctx.fill();
+  } else if (c.flyKind === FLY_MOUCH) {
+    const lift = bodyH * (0.2 + flap * 0.35);
+    ctx.fillStyle = "rgba(198, 164, 255, 0.9)";
+    ctx.beginPath();
+    ctx.ellipse(midX - bodyW * 0.24, midY - lift, bodyW * 0.3, bodyH * 0.2, -0.5, 0, Math.PI * 2);
+    ctx.ellipse(midX + bodyW * 0.24, midY - lift, bodyW * 0.3, bodyH * 0.2, 0.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#6a45c8";
+    ctx.beginPath();
+    ctx.ellipse(midX, midY + bodyH * 0.06, bodyW * 0.26, bodyH * 0.4, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#f4f1ff";
+    ctx.beginPath();
+    ctx.arc(midX - bodyW * 0.08, midY, bodyH * 0.14, 0, Math.PI * 2);
+    ctx.arc(midX + bodyW * 0.1, midY, bodyH * 0.14, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
 }
 
 function drawLettuce(ctx: CanvasRenderingContext2D, sim: Sim): void {
@@ -841,10 +1392,17 @@ function hills(
   ctx.fill();
 }
 
-function clouds(ctx: CanvasRenderingContext2D, sim: Sim): void {
+function clouds(ctx: CanvasRenderingContext2D, sim: Sim, hideLowest = false): void {
   const w = sim.layout.w;
+  let skip: (typeof sim.clouds)[number] | null = null;
+  if (hideLowest) {
+    for (const c of sim.clouds) {
+      if (!skip || c.y > skip.y) skip = c;
+    }
+  }
   ctx.fillStyle = "rgba(255, 236, 214, 0.78)";
   for (const c of sim.clouds) {
+    if (c === skip) continue;
     const span = w + c.r * 4;
     let x = (c.x - sim.anim * c.v) % span;
     if (x < -c.r * 2) x += span;
@@ -885,10 +1443,14 @@ function drawParticles(
 
 function drawMonchel(ctx: CanvasRenderingContext2D, sim: Sim, fx: Fx): void {
   const L = sim.layout;
-  const { sheet, frame } = spriteFor(sim);
+  const tucked = sim.shelling && sim.phase !== "dead";
+  const posed = spriteFor(sim);
+  const sheet = tucked && isReady(shellSlideSheet) ? shellSlideSheet : posed.sheet;
+  const frame = tucked && isReady(shellSlideSheet) ? 0 : posed.frame;
   const img = isReady(sheet) ? sheet.img : null;
   const px = L.playerX + sim.shift;
-  const h = L.playerH * 0.8;
+  const stageScale = sim.gear === "skates" || sim.gear === "robo" || sim.gear === "jet" ? 1.1025 : 1;
+  const h = tucked ? L.playerH * 0.42 * SHELL_SLIDE_SCALE : L.playerH * 0.8 * stageScale;
   const frameW = img && img.height > 0 ? img.width / sheet.frames : sheet.fallbackW;
   const frameH = img && img.height > 0 ? img.height : sheet.fallbackH;
   const aspect = frameW / frameH;
@@ -915,7 +1477,7 @@ function drawMonchel(ctx: CanvasRenderingContext2D, sim: Sim, fx: Fx): void {
   if (!img) {
     ctx.fillStyle = "#6d4cb8";
     ctx.beginPath();
-    ctx.ellipse(px, sim.y - h * 0.45, w * 0.28, h * 0.32, 0, 0, Math.PI * 2);
+    ctx.ellipse(px, sim.y - h * (tucked ? 0.35 : 0.45), w * 0.28, h * (tucked ? 0.28 : 0.32), 0, 0, Math.PI * 2);
     ctx.fill();
     return;
   }
@@ -935,10 +1497,11 @@ function drawMonchel(ctx: CanvasRenderingContext2D, sim: Sim, fx: Fx): void {
 
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.imageSmoothingEnabled = false;
+  ctx.imageSmoothingEnabled = tucked;
   const pixelCtx = ctx as CanvasRenderingContext2D & { webkitImageSmoothingEnabled?: boolean };
-  pixelCtx.webkitImageSmoothingEnabled = false;
-  if (bitmap) ctx.drawImage(bitmap, left, top);
+  pixelCtx.webkitImageSmoothingEnabled = !tucked;
+  if (tucked && img) ctx.drawImage(img, 0, 0, img.width, img.height, left, top, dw, dh);
+  else if (bitmap) ctx.drawImage(bitmap, left, top);
   else if (img) {
     const fw = img.width / sheet.frames;
     ctx.drawImage(img, Math.round(frame * fw), 0, fw, img.height, left, top, dw, dh);

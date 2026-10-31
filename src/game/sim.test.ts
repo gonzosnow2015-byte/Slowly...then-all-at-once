@@ -8,13 +8,18 @@ import {
   crowMotionDrop,
   eachChunk,
   extendCourse,
+  FLY_BIRD,
+  FLY_MOUCH,
   gearFor,
   holdAirTime,
   JET_M,
+  jumpNow,
+  SHELL_SLIDES,
+  swipePopStrength,
   JUMP_HOLD,
   LAYOUT_SEED,
   layoutFrom,
-  LETTUCE_PER_STAGE,
+  LETTUCE_RUN_STAGE,
   metersOf,
   METER_K,
   nextHazard,
@@ -73,6 +78,20 @@ function ai() {
     const nose = L.playerW * 0.36;
     const lead = nose + sim.speed * 0.2;
     const crowLead = nose + sim.speed * 0.55;
+    let deckDist = Infinity;
+    if (sim.grounded) {
+      eachChunk(sim, (c) => {
+        if (c.barrierH <= 0 || c.barrierDrop <= 0) return;
+        const deck = L.groundY - c.barrierDrop;
+        if (Math.abs(sim.y - deck) > 12) return;
+        const dist = c.x + c.barrierOff - sim.worldX;
+        if (dist < deckDist) deckDist = dist;
+      });
+    }
+    if (deckDist < lead && deckDist > -6 && !(hazard && hazard.dist < lead && hazard.dist > -6)) {
+      releaseAt = t + 0.1;
+      return true;
+    }
     if ((crowDist < crowLead && crowDist > -L.playerW) || (hazard && hazard.dist < lead && hazard.dist > -6)) {
       releaseAt = t + JUMP_HOLD + 0.04;
       return true;
@@ -161,6 +180,7 @@ describe("monchel runner", () => {
       ] as const) {
         const sim = createSim(layoutFrom(size[0], size[1]), { seed, best: 0 });
         sim.phase = "run";
+        sim.coyotes = [];
         const start = sim.speed;
         run(sim, 22, ai());
         assert.equal(sim.phase, "run", `died (${sim.cause}) seed ${seed} ${size.join("x")} score ${sim.score}`);
@@ -188,6 +208,7 @@ describe("monchel runner", () => {
     sim.head = 0;
     sim.count = 1;
     sim.cursor = chunk.x + chunk.w;
+    sim.rats = [];
     sim.y = sim.layout.groundY;
     sim.grounded = true;
     const tap = (held: boolean, edge: boolean) => tick(sim, 1 / 60, { held, edge, flyX: 0, flyY: 0 });
@@ -313,24 +334,38 @@ describe("monchel runner", () => {
     const hops = (gear: "jet" | "robo") => {
       const sim = createSim(layout, { seed: 1, best: 0 });
       sim.phase = "run";
-      const spot = layout.playerH * METER_K * ((gear === "jet" ? JET_M : ROBO_M) + 2);
-      extendCourse(sim, spot + layout.w * 2);
-      sim.gear = gear;
-      sim.grounded = true;
-      sim.y = layout.groundY;
-      sim.vy = 0;
-      sim.phase = "run";
+      const need = (gear === "jet" ? JET_M : ROBO_M) + 6;
+      const dt = 1 / 60;
+      for (let i = 0; i < 240 * 60 && metersOf(sim) < need; i++) {
+        sim.phase = "run";
+        sim.y = layout.playerH * 0.45;
+        sim.vy = 0;
+        sim.grounded = false;
+        sim.lifting = false;
+        sim.grace = 1;
+        tick(sim, dt, false);
+      }
+      sim.rats = [];
+      sim.coyotes = [];
+      const stand = sim.worldX;
       eachChunk(sim, (c) => {
         if (c.air2H <= 0) c.airW = 0;
+        if (c.x + c.w < stand - 8 || c.x > stand + layout.w) return;
+        c.gap = false;
+        c.barrierH = 0;
+        c.barrierDrop = 0;
+        c.platW = 0;
+        c.plat2W = 0;
+        c.plat3W = 0;
+        c.plat4W = 0;
       });
-      let stand = spot;
-      let bestW = 0;
-      eachChunk(sim, (c) => {
-        if (c.x + c.w < spot || c.gap || c.barrierH > 0 || c.platW > 0 || c.plat2W > 0 || c.w <= bestW) return;
-        bestW = c.w;
-        stand = c.x + Math.min(layout.playerW * 0.4, c.w * 0.2);
-      });
-      sim.worldX = stand;
+      sim.phase = "run";
+      sim.gear = gear;
+      sim.y = layout.groundY;
+      sim.vy = 0;
+      sim.grounded = true;
+      sim.lifting = false;
+      sim.airJumps = gear === "jet" ? 2 : 1;
       const rises: number[] = [];
       for (let jump = 0; jump < 4; jump++) {
         for (let i = 0; i < 12; i++) tick(sim, 1 / 60, false);
@@ -364,6 +399,7 @@ describe("monchel runner", () => {
     let shellHaz = 0;
     let shellPlat = 0;
     let shellDeck = 0;
+    let shellThird = 0;
     let skatesPlat = 0;
     let skatesAir = 0;
     let skatesN = 0;
@@ -380,7 +416,7 @@ describe("monchel runner", () => {
     let firstJetW = 0;
     let firstJetBad = false;
     const dt = 1 / 60;
-    for (let i = 0; i < 70 * 60 && sim.gear !== "bluejet"; i++) {
+    for (let i = 0; i < 160 * 60 && sim.gear !== "bluejet"; i++) {
       sim.phase = "run";
       sim.y = layout.playerH * 0.5;
       sim.vy = 0;
@@ -401,6 +437,7 @@ describe("monchel runner", () => {
           if (c.gap || c.barrierH > 0) shellHaz++;
           if (c.platW > 0) shellPlat++;
           if (c.plat2W > 0) shellDeck++;
+          if (c.plat3W > 0) shellThird++;
           if (c.airW > 0 && c.air2W <= 0) {
             shellAir++;
             const center = (c.airDrop + c.airH / 2) / layout.playerH;
@@ -436,9 +473,10 @@ describe("monchel runner", () => {
     assert.equal(sim.gear, "bluejet");
     assert.ok(shellHaz >= 5, `shell hazards ${shellHaz}`);
     assert.ok(shellPlat >= 2, `stage 1 platforms ${shellPlat}`);
-    assert.ok(shellAir >= 2 && shellAir <= 3, `stage 1 crows ${shellAir}`);
+    assert.ok(shellAir >= 5 && shellAir <= 8, `stage 1 crows ${shellAir}`);
     assert.ok(shellLow > 0 && shellHigh > 0, `stage 1 heights low ${shellLow} high ${shellHigh}`);
-    assert.equal(shellDeck, 0, "stage 1 stays a single deck");
+    assert.ok(shellDeck > 0, `stage 1 upper decks ${shellDeck}`);
+    assert.ok(shellThird > 0, `stage 1 third decks ${shellThird}`);
     assert.ok(skatesN > 4, `skates chunks ${skatesN}`);
     assert.ok(skatesPlat > 0, "stage 2 platforms");
     assert.ok(skatesAir > 0, "stage 2 floaters");
@@ -478,6 +516,62 @@ describe("monchel runner", () => {
     }
     assert.ok(gates >= 2, `stage 5 gates ${gates}`);
     assert.ok(plats >= 1, `stage 5 platform ${plats}`);
+  });
+
+  it("stage 5 spaces the gates and puts flyers between them", () => {
+    const layout = layoutFrom(900, 640);
+    const px = layout.playerH * METER_K;
+    const read = (seed: number) => {
+      const sim = createSim(layout, { seed, best: 0 });
+      sim.phase = "run";
+      const dt = 1 / 60;
+      const seen = new Set<number>();
+      const gates: number[] = [];
+      const flyers: { x: number; kind: number }[] = [];
+      let lettuce = 0;
+      let openerSet = false;
+      let openerFly = 0;
+      let openerGate = false;
+      for (let i = 0; i < 220 * 60 && metersOf(sim) < BLUE_M + 70; i++) {
+        sim.phase = "run";
+        sim.grace = 1;
+        sim.y = layout.playerH * 0.45;
+        sim.vy = 0;
+        sim.grounded = false;
+        tick(sim, dt, false);
+        eachChunk(sim, (c) => {
+          if (seen.has(c.x)) return;
+          seen.add(c.x);
+          if (c.x / px < BLUE_M) return;
+          if (!openerSet) {
+            openerSet = true;
+            openerFly = c.flyKind;
+            openerGate = c.air2H > 0 && c.airH > 0;
+          }
+          if (c.letN > 0) lettuce++;
+          if (c.air2H > 0 && c.airH > 0) gates.push(c.x);
+          if (c.flyKind > 0) flyers.push({ x: c.x, kind: c.flyKind });
+        });
+      }
+      return { gates, flyers, lettuce, openerSet, openerFly, openerGate };
+    };
+    for (const seed of [1, 9]) {
+      const { gates, flyers, lettuce, openerSet, openerFly, openerGate } = read(seed);
+      assert.equal(lettuce, 0, `seed ${seed} stage 5 lettuce`);
+      assert.ok(openerSet && openerFly === 0 && !openerGate, `seed ${seed} opener fly ${openerFly} gate ${openerGate}`);
+      assert.ok(gates.length >= 3, `seed ${seed} gates ${gates.length}`);
+      let spaced = 0;
+      for (let i = 1; i < gates.length; i++) {
+        const gap = gates[i]! - gates[i - 1]!;
+        const min = speedAt(gates[i]!, layout) * 1.15;
+        if (gap > min) spaced++;
+      }
+      assert.ok(spaced >= gates.length - 1, `seed ${seed} spaced ${spaced}/${gates.length - 1}`);
+      const between = flyers.filter((f) => f.x > gates[0]! && f.x < gates[1]!).length;
+      assert.ok(between >= 2, `seed ${seed} flyers between first gates ${between}`);
+      assert.ok(flyers.some((f) => f.kind === FLY_BIRD), `seed ${seed} bird`);
+      assert.ok(flyers.some((f) => f.kind === FLY_MOUCH), `seed ${seed} mouch`);
+    }
   });
 
   it("can perch on a platform while flying", () => {
@@ -552,7 +646,7 @@ describe("monchel runner", () => {
     assert.equal(sim.lettuces, 1);
   });
 
-  it("puts the same lettuce count in every stage and repeats the course", () => {
+  it("puts the same lettuce count in stages 1–4 and none in stage 5", () => {
     const layout = layoutFrom(1280, 800);
     const endM = BLUE_M + (BLUE_M - JET_M) + 5;
     const tally = (seed: number) => {
@@ -588,11 +682,13 @@ describe("monchel runner", () => {
       return { totals, ground };
     };
     const plan = tally(LAYOUT_SEED);
-    assert.deepEqual(plan.totals, Array(5).fill(LETTUCE_PER_STAGE), `lettuce per stage ${plan.totals.join(",")}`);
-    for (let s = 0; s < 5; s++) {
-      assert.ok(plan.ground[s]! > 0 && plan.ground[s]! < LETTUCE_PER_STAGE, `stage ${s} ground ${plan.ground[s]}`);
+    const expect = [LETTUCE_RUN_STAGE, LETTUCE_RUN_STAGE, LETTUCE_RUN_STAGE, LETTUCE_RUN_STAGE, 0];
+    assert.deepEqual(plan.totals, expect, `lettuce per stage ${plan.totals.join(",")}`);
+    for (let s = 0; s < 4; s++) {
+      assert.ok(plan.ground[s]! > 0 && plan.ground[s]! < expect[s]!, `stage ${s} ground ${plan.ground[s]}`);
     }
-    assert.deepEqual(tally(4).totals, Array(5).fill(LETTUCE_PER_STAGE), "a re-roll still has 10 per stage");
+    assert.equal(plan.totals[4], 0);
+    assert.deepEqual(tally(4).totals, expect, "a re-roll keeps the per-stage lettuce count");
 
     const course = (seed: number) => {
       const sim = createSim(layout, { seed, best: 0 });
@@ -675,5 +771,160 @@ describe("monchel runner", () => {
     assert.ok(Math.abs(height(wide) - height(narrow)) < 0.01);
     assert.ok(Math.abs(width(wide) - layout.playerH * (0.34 - 0.08)) < 0.01);
     assert.ok(Math.abs(height(wide) - layout.playerH * (0.18 - 0.08)) < 0.01);
+  });
+
+  it("shell slide holds, releases, and only lasts three times", () => {
+    const layout = layoutFrom(800, 600);
+    const slide = { held: false, flyX: 0, flyY: 0, slide: true };
+    const off = { held: false, flyX: 0, flyY: 0, slide: false };
+    const sim = createSim(layout, { seed: 1, best: 0 });
+    sim.phase = "run";
+    const plain = createSim(layout, { seed: 1, best: 0 });
+    plain.phase = "run";
+    for (let i = 0; i < 30; i++) {
+      tick(sim, 1 / 60, slide);
+      tick(plain, 1 / 60, off);
+    }
+    assert.equal(sim.shelling, true);
+    assert.equal(sim.shellsLeft, SHELL_SLIDES - 1);
+    assert.ok(sim.worldX > plain.worldX * 1.1, `slide ${sim.worldX} vs run ${plain.worldX}`);
+    sim.grounded = false;
+    sim.vy = 0;
+    tick(sim, 1 / 60, slide);
+    assert.equal(sim.shelling, true);
+    assert.equal(sim.shellsLeft, SHELL_SLIDES - 1);
+    tick(sim, 1 / 60, off);
+    assert.equal(sim.shelling, false);
+    assert.equal(sim.shellsLeft, SHELL_SLIDES - 1);
+    tick(sim, 1 / 60, slide);
+    tick(sim, 1 / 60, off);
+    tick(sim, 1 / 60, slide);
+    tick(sim, 1 / 60, off);
+    assert.equal(sim.shellsLeft, 0);
+    assert.equal(sim.shelling, false);
+    tick(sim, 1 / 60, slide);
+    assert.equal(sim.shelling, false);
+    assert.equal(sim.phase, "run");
+  });
+
+  it("cannot jump while shelled, and a slide stuns a ground enemy", () => {
+    const layout = layoutFrom(800, 600);
+    const sim = createSim(layout, { seed: 1, best: 0 });
+    sim.phase = "run";
+    sim.grounded = true;
+    sim.y = layout.groundY;
+    tick(sim, 1 / 60, { held: false, flyX: 0, flyY: 0, slide: true });
+    assert.equal(sim.shelling, true);
+    const y = sim.y;
+    assert.equal(jumpNow(sim), "blocked");
+    assert.equal(sim.y, y);
+    assert.equal(sim.grounded, true);
+    const foe = {
+      x: sim.worldX + sim.shift,
+      dir: 1,
+      home: sim.worldX,
+      reach: 30,
+      feet: sim.y,
+      wantPlat: false,
+      seated: true,
+      stun: 0,
+    };
+    sim.rats.push(foe);
+    tick(sim, 1 / 60, { held: false, flyX: 0, flyY: 0, slide: true });
+    assert.equal(sim.phase, "run");
+    assert.ok(foe.stun > 1, `stun ${foe.stun} shelling ${sim.shelling}`);
+    sim.gear = "bluejet";
+    sim.grounded = false;
+    sim.y = layout.groundY - layout.playerH;
+    const left = sim.shellsLeft;
+    tick(sim, 1 / 60, { held: false, flyX: 0, flyY: 0, slide: true });
+    assert.equal(sim.shelling, false);
+    assert.equal(sim.shellsLeft, left);
+  });
+
+  it("a faster swipe jumps higher out of a shell slide", () => {
+    const layout = layoutFrom(800, 500);
+    const off = { held: false, flyX: 0, flyY: 0, slide: false };
+    const rise = (pop: number) => {
+      const sim = createSim(layout, { seed: 1, best: 0 });
+      sim.phase = "run";
+      sim.grounded = true;
+      sim.y = layout.groundY;
+      tick(sim, 1 / 60, { held: false, flyX: 0, flyY: 0, slide: true });
+      assert.equal(sim.shelling, true);
+      const ground = sim.y;
+      const shells = sim.shellsLeft;
+      tick(sim, 1 / 60, { ...off, slidePop: pop });
+      assert.equal(sim.shelling, false);
+      assert.equal(sim.shellsLeft, shells);
+      let minY = sim.y;
+      for (let i = 0; i < 120; i++) {
+        tick(sim, 1 / 60, off);
+        if (sim.y < minY) minY = sim.y;
+        if (sim.phase !== "run") break;
+      }
+      return { rise: ground - minY, grounded: sim.grounded, air: sim.airJumps, phase: sim.phase };
+    };
+    const none = rise(0);
+    const slow = rise(0.22);
+    const fast = rise(1);
+    const tap = peak(2);
+    const full = peak(Math.ceil(JUMP_HOLD * 60) + 2);
+    assert.ok(none.rise < 2, `release without a swipe should stay down, rose ${none.rise}`);
+    assert.equal(none.grounded, true);
+    assert.ok(slow.rise > tap * 0.7, `slow ${slow.rise} tap ${tap}`);
+    assert.ok(fast.rise > slow.rise * 2, `fast ${fast.rise} slow ${slow.rise}`);
+    assert.ok(fast.rise > tap * 2.2, `fast ${fast.rise} tap ${tap}`);
+    assert.ok(fast.rise > full * 0.75, `fast ${fast.rise} full ${full}`);
+    assert.equal(swipePopStrength(8, 40), 0);
+    assert.ok(swipePopStrength(36, 240) > 0.15);
+    assert.ok(swipePopStrength(36, 240) < 0.5);
+    assert.equal(swipePopStrength(40, 1600), 1);
+    const robo = createSim(layout, { seed: 1, best: 0 });
+    robo.phase = "run";
+    robo.worldX = layout.playerH * METER_K * (ROBO_M + 2);
+    robo.gear = "robo";
+    robo.grounded = true;
+    robo.y = layout.groundY;
+    robo.airJumps = 1;
+    tick(robo, 1 / 60, { held: false, flyX: 0, flyY: 0, slide: true });
+    tick(robo, 1 / 60, { ...off, slidePop: 1 });
+    assert.equal(robo.gear, "robo");
+    assert.equal(robo.shelling, false);
+    assert.equal(robo.grounded, false);
+    assert.equal(robo.airJumps, 1);
+    robo.gear = "bluejet";
+    robo.shelling = true;
+    robo.grounded = false;
+    const y = robo.y;
+    tick(robo, 1 / 60, { held: false, flyX: 0, flyY: 0, slide: true, slidePop: 1 });
+    assert.equal(robo.shelling, false);
+    assert.ok(Math.abs(robo.y - y) < 1);
+  });
+
+  it("desktop jump out of a slide uses press length", () => {
+    const layout = layoutFrom(800, 500);
+    const rise = (holdFrames: number) => {
+      const sim = createSim(layout, { seed: 1, best: 0 });
+      sim.phase = "run";
+      sim.grounded = true;
+      sim.y = layout.groundY;
+      tick(sim, 1 / 60, { held: false, flyX: 0, flyY: 0, slide: true });
+      assert.equal(sim.shelling, true);
+      const ground = sim.y;
+      let minY = sim.y;
+      for (let i = 0; i < 120; i++) {
+        const held = i < holdFrames;
+        tick(sim, 1 / 60, { held, edge: i === 0, flyX: 0, flyY: 0, slide: false });
+        if (sim.y < minY) minY = sim.y;
+        if (sim.phase !== "run") break;
+      }
+      assert.equal(sim.shelling, false);
+      return ground - minY;
+    };
+    const tap = rise(1);
+    const full = rise(Math.ceil(JUMP_HOLD * 60) + 2);
+    assert.ok(tap > 4, `tap ${tap}`);
+    assert.ok(full > tap * 2, `full ${full} tap ${tap}`);
   });
 });

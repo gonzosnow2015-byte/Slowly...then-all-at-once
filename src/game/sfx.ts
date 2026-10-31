@@ -1,9 +1,29 @@
 const crunchUrl = new URL("./crunch.wav", import.meta.url).href;
 const jetUrl = new URL("./jet-jump.wav", import.meta.url).href;
+const TRACKS = [
+  "/music/lush-lagoon.mp3",
+  "/music/jazz-the-dust.mp3",
+  "/music/glass-heart.mp3",
+  "/music/deep-house-afro.mp3",
+  "/music/90s-retro.mp3",
+];
+
+/** Slider percents. Music starts a step under effects. */
+export const MUSIC_PERCENT = 52;
+export const EFFECTS_PERCENT = 70;
+const MUSIC_AT_DEFAULT = 0.15;
 
 export function createSfx() {
   let ctx: AudioContext | null = null;
   let muted = false;
+  let musicMuted = false;
+  let musicStarted = false;
+  let previewing = false;
+  let previewLoud = false;
+  let trackIndex = 0;
+  let musicPercent = MUSIC_PERCENT;
+  let effectsPercent = EFFECTS_PERCENT;
+  let music: HTMLAudioElement | null = null;
   let crunchBuf: AudioBuffer | null = null;
   let crunchLoad: Promise<AudioBuffer | null> | null = null;
   let jetBuf: AudioBuffer | null = null;
@@ -21,22 +41,88 @@ export function createSfx() {
     type: OscillatorType,
     gain: number,
     slideTo?: number,
+    delay = 0,
+    force = false,
   ): void {
-    if (muted) return;
+    if (muted && !force) return;
+    const level = gain * (effectsPercent / EFFECTS_PERCENT);
+    if (level <= 0.0008) return;
     const c = ac();
+    const t0 = c.currentTime + delay;
     const o = c.createOscillator();
     const g = c.createGain();
     o.type = type;
-    o.frequency.setValueAtTime(freq, c.currentTime);
+    o.frequency.setValueAtTime(freq, t0);
     if (slideTo) {
-      o.frequency.exponentialRampToValueAtTime(Math.max(40, slideTo), c.currentTime + dur);
+      o.frequency.exponentialRampToValueAtTime(Math.max(40, slideTo), t0 + dur);
     }
-    g.gain.setValueAtTime(gain, c.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + dur);
+    g.gain.setValueAtTime(level, t0);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
     o.connect(g);
     g.connect(c.destination);
-    o.start();
-    o.stop(c.currentTime + dur + 0.02);
+    o.start(t0);
+    o.stop(t0 + dur + 0.02);
+  }
+
+  function musicOut(): number {
+    return Math.min(1, (musicPercent / MUSIC_PERCENT) * MUSIC_AT_DEFAULT);
+  }
+
+  function stampLevels(el: HTMLAudioElement): void {
+    el.volume = previewing && previewLoud ? 1 : musicOut();
+    el.dataset.musicLevel = String(musicPercent);
+    el.dataset.effectsLevel = String(effectsPercent);
+  }
+
+  function musicEl(): HTMLAudioElement {
+    if (!music) {
+      music = new Audio(TRACKS[trackIndex]);
+      music.loop = true;
+      music.preload = "auto";
+      music.dataset.track = String(trackIndex);
+      stampLevels(music);
+      music.setAttribute("data-music", "1");
+      music.hidden = true;
+      if (typeof document !== "undefined") document.body.appendChild(music);
+      music.addEventListener("ended", () => {
+        if (!music || !musicStarted || musicMuted) return;
+        music.currentTime = 0;
+        void music.play().catch(() => {});
+      });
+    }
+    return music;
+  }
+
+  function silenced(): boolean {
+    return musicMuted;
+  }
+
+  function applyMusic(): void {
+    const el = music;
+    if (!el || !musicStarted) return;
+    if (silenced()) {
+      el.pause();
+      return;
+    }
+    void el.play().catch(() => {});
+  }
+
+  function trackAt(index: number): number {
+    const n = Math.floor(index);
+    if (!Number.isFinite(n) || n < 0 || n >= TRACKS.length) return 0;
+    return n;
+  }
+
+  function loadTrack(index: number, autoplay: boolean): void {
+    const el = musicEl();
+    const next = trackAt(index);
+    trackIndex = next;
+    if (el.dataset.track !== String(next)) {
+      el.src = TRACKS[next]!;
+      el.dataset.track = String(next);
+      el.loop = true;
+    }
+    if (autoplay) applyMusic();
   }
 
   function loadSample(
@@ -65,16 +151,18 @@ export function createSfx() {
     return job;
   }
 
-  function playSample(buf: AudioBuffer, gain: number): void {
-    if (muted) return;
+  function playSample(buf: AudioBuffer, gain: number, force = false): void {
+    if (muted && !force) return;
+    const level = gain * (effectsPercent / EFFECTS_PERCENT);
+    if (level <= 0.0008) return;
     const c = ac();
     const now = c.currentTime;
     const src = c.createBufferSource();
     src.buffer = buf;
     const g = c.createGain();
     const end = now + buf.duration;
-    g.gain.setValueAtTime(gain, now);
-    g.gain.setValueAtTime(gain, Math.max(now, end - 0.04));
+    g.gain.setValueAtTime(level, now);
+    g.gain.setValueAtTime(level, Math.max(now, end - 0.04));
     g.gain.exponentialRampToValueAtTime(0.001, end);
     src.connect(g);
     g.connect(c.destination);
@@ -129,9 +217,78 @@ export function createSfx() {
       ac();
       void loadCrunch();
       void loadJet();
+      musicEl();
     },
     setMuted(v: boolean) {
       muted = v;
+    },
+    setMusicMuted(v: boolean) {
+      musicMuted = v;
+      applyMusic();
+    },
+    setTrack(index: number) {
+      loadTrack(index, musicStarted);
+    },
+    setMusicPercent(percent: number) {
+      const n = Math.min(100, Math.max(0, Math.round(percent)));
+      musicPercent = n;
+      if (music) stampLevels(music);
+    },
+    setEffectsPercent(percent: number) {
+      const n = Math.min(100, Math.max(0, Math.round(percent)));
+      effectsPercent = n;
+      if (music) stampLevels(music);
+    },
+    previewJump() {
+      const el = musicEl();
+      el.dataset.fxHeard = String(effectsPercent);
+      tone(420, 0.09, "square", 0.045, 700, 0, true);
+    },
+    previewTrack(index: number, hear = false, loud = true) {
+      if (musicStarted) {
+        loadTrack(index, true);
+        return;
+      }
+      const el = musicEl();
+      const next = trackAt(index);
+      trackIndex = next;
+      previewing = true;
+      previewLoud = loud;
+      if (el.dataset.track !== String(next)) {
+        el.pause();
+        el.src = TRACKS[next]!;
+        el.dataset.track = String(next);
+        el.loop = true;
+      }
+      stampLevels(el);
+      el.dataset.previewed = "1";
+      if (musicMuted && !hear) {
+        el.pause();
+        return;
+      }
+      void el.play().catch(() => {});
+    },
+    stopPreview() {
+      if (!previewing || musicStarted) return;
+      previewing = false;
+      previewLoud = false;
+      if (!music) return;
+      music.pause();
+      music.currentTime = 0;
+      stampLevels(music);
+    },
+    startMusic() {
+      previewing = false;
+      previewLoud = false;
+      musicStarted = true;
+      if (music) stampLevels(music);
+      loadTrack(trackIndex, true);
+    },
+    stopMusic() {
+      musicStarted = false;
+      previewing = false;
+      previewLoud = false;
+      if (music) music.pause();
     },
     go() {
       tone(320, 0.1, "triangle", 0.05, 520);
@@ -151,10 +308,25 @@ export function createSfx() {
     gear() {
       tone(520, 0.14, "square", 0.04, 820);
     },
+    slide() {
+      tone(220, 0.11, "sawtooth", 0.04, 70);
+    },
     collect() {
       crunch();
     },
+    stompRat() {
+      tone(740, 0.05, "square", 0.035, 1280);
+      tone(1240, 0.07, "square", 0.028, 1760, 0.055);
+    },
+    stompCoyote() {
+      tone(360, 0.15, "triangle", 0.05, 120);
+    },
     close() {
+      if (music) {
+        music.pause();
+        music.remove();
+        music = null;
+      }
       void ctx?.close();
       ctx = null;
     },
