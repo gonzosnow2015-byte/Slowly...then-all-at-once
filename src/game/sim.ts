@@ -180,6 +180,12 @@ export type Sim = {
   /** Seconds spent in the current run. */
   runT: number;
   lettuces: number;
+  /** 1 once Chog is picked up. Added to the end score, not per second. */
+  chogs: number;
+  /** wait until the street chunk exists, then stand, ride, or down. */
+  chog: "wait" | "stand" | "ride" | "down";
+  /** World x while he is standing or lying. Ignored while riding. */
+  chogX: number;
   /** Combined end-of-run score. 0 until the run ends. */
   points: number;
   best: number;
@@ -376,11 +382,12 @@ export function metersOf(sim: Sim): number {
  * 20 per second, and each lettuce is worth 100 — about ten meters, or
  * five seconds. Longer, farther, and greedier runs all score higher.
  */
-export function runScore(meters: number, seconds: number, lettuces: number): number {
+export function runScore(meters: number, seconds: number, lettuces: number, chogs = 0): number {
   const m = Math.max(0, meters);
   const s = Math.max(0, seconds);
   const n = Math.max(0, Math.floor(lettuces));
-  return Math.round(m * 10 + s * 20 + n * 100);
+  const bonus = Math.max(0, Math.floor(chogs));
+  return Math.round(m * 10 + s * 20 + n * 100 + bonus);
 }
 
 function canDouble(gear: Gear): boolean {
@@ -481,6 +488,9 @@ export function createSim(layout: Layout, opts: { seed: number; best: number }):
     score: 0,
     runT: 0,
     lettuces: 0,
+    chogs: 0,
+    chog: "wait",
+    chogX: 0,
     points: 0,
     best: opts.best,
     newBest: false,
@@ -2672,7 +2682,7 @@ function die(sim: Sim, cause: Cause, events: Events): void {
   if (sim.phase !== "run" || cause == null) return;
   sim.shelling = false;
   sim.score = Math.floor(metersOf(sim));
-  sim.points = runScore(sim.score, sim.runT, sim.lettuces);
+  sim.points = runScore(sim.score, sim.runT, sim.lettuces, sim.chogs);
   sim.newBest = sim.points > sim.best;
   if (sim.newBest) sim.best = sim.points;
   sim.cause = cause;
@@ -2710,7 +2720,191 @@ function collectLettuce(sim: Sim, events: Events): void {
   });
 }
 
-/** Map an upward swipe into the same 0..1 range as holding the jump button. */
+const CHOG_STAND_H = 0.78;
+const CHOG_STAND_ASPECT = 661 / 1127;
+const CHOG_RIDE_ASPECT = 805 / 981;
+const CHOG_DOWN_ASPECT = 1253 / 632;
+
+function monchelSpriteH(sim: Sim): number {
+  const stage = sim.gear === "skates" || sim.gear === "robo" || sim.gear === "jet" ? 1.1025 : 1;
+  if (sim.shelling && sim.phase !== "dead") return sim.layout.playerH * 0.42 * SHELL_SLIDE_SCALE;
+  return sim.layout.playerH * 0.8 * stage;
+}
+
+export type ChogFrame = { cx: number; top: number; w: number; h: number };
+
+/** Standing sprite, before pickup. cx is world x. */
+export function chogStandFrame(sim: Sim): ChogFrame | null {
+  if (sim.chog !== "stand") return null;
+  const h = sim.layout.playerH * CHOG_STAND_H;
+  return { cx: sim.chogX, top: sim.layout.groundY - h, w: h * CHOG_STAND_ASPECT, h };
+}
+
+/** Lying sprite left on the road after he is knocked off. */
+export function chogDownFrame(sim: Sim): ChogFrame | null {
+  if (sim.chog !== "down") return null;
+  const h = (sim.layout.playerH * CHOG_STAND_H) / CHOG_DOWN_ASPECT;
+  return { cx: sim.chogX, top: sim.layout.groundY - h, w: h * CHOG_DOWN_ASPECT, h };
+}
+
+/** Riding sprite anchored on Monchel's shell. cx is world x. */
+export function chogRideFrame(sim: Sim): ChogFrame | null {
+  if (sim.chog !== "ride") return null;
+  const mh = monchelSpriteH(sim);
+  const h = mh * (sim.shelling ? 0.62 : 0.5);
+  const bottom = sim.y - mh * (sim.shelling ? 0.78 : 0.68);
+  return { cx: footX(sim) - mh * 0.06, top: bottom - h, w: h * CHOG_RIDE_ASPECT, h };
+}
+
+function rectOf(frame: ChogFrame): { left: number; right: number; top: number; bottom: number } {
+  return {
+    left: frame.cx - frame.w * 0.42,
+    right: frame.cx + frame.w * 0.42,
+    top: frame.top + frame.h * 0.08,
+    bottom: frame.top + frame.h * 0.96,
+  };
+}
+
+function overlapRect(
+  a: { left: number; right: number; top: number; bottom: number },
+  b: { left: number; right: number; top: number; bottom: number },
+): boolean {
+  return a.right > b.left && a.left < b.right && a.bottom > b.top && a.top < b.bottom;
+}
+
+function playerBox(sim: Sim): { left: number; right: number; top: number; bottom: number } {
+  const L = sim.layout;
+  const foot = footX(sim);
+  return {
+    left: foot - L.playerW * 0.28,
+    right: foot + L.playerW * 0.36,
+    top: sim.y - L.playerH * 0.62,
+    bottom: sim.y - L.playerH * 0.08,
+  };
+}
+
+function chogBlocked(sim: Sim, c: Chunk, x: number): boolean {
+  const L = sim.layout;
+  const pad = L.playerH * 0.42;
+  if (c.gap || x < c.x + 10 || x > c.x + c.w - 10) return true;
+  if (c.barrierH > 0) {
+    const a = c.x + c.barrierOff - pad;
+    const b = c.x + c.barrierOff + Math.max(c.barrierW, L.playerH * 0.3) + pad;
+    if (x > a && x < b) return true;
+  }
+  let under = false;
+  eachDeck(c, (off, w, drop) => {
+    if (under || w <= 0 || drop <= 0 || drop > L.playerH * 1.4) return;
+    if (x > c.x + off - pad && x < c.x + off + w + pad) under = true;
+  });
+  return under;
+}
+
+function placeChog(sim: Sim): void {
+  if (sim.chog !== "wait") return;
+  const L = sim.layout;
+  const unit = L.playerH * METER_K;
+  const meters = ROBO_M + 7 + hash01(sim.seed * 23 + 11) * 10;
+  const want = meters * unit;
+  let cover: Chunk | null = null;
+  eachChunk(sim, (c) => {
+    if (!cover && want >= c.x && want < c.x + c.w) cover = c;
+  });
+  if (!cover) return;
+  let best: number | null = null;
+  let bestD = Infinity;
+  const consider = (c: Chunk, x: number, loose: boolean) => {
+    if (c.gap) return;
+    if (!loose && chogBlocked(sim, c, x)) return;
+    if (loose && (x < c.x + 10 || x > c.x + c.w - 10)) return;
+    const m = x / unit;
+    if (m < ROBO_M + 2 || m > JET_M - 4) return;
+    const d = Math.abs(x - want);
+    if (d < bestD) {
+      bestD = d;
+      best = x;
+    }
+  };
+  eachChunk(sim, (c) => {
+    if (c.x + c.w < unit * (ROBO_M + 2) || c.x > unit * (ROBO_M + 30)) return;
+    consider(c, want >= c.x && want < c.x + c.w ? want : c.x + c.w * 0.5, false);
+    for (let i = 1; i < 6; i++) consider(c, c.x + (c.w * i) / 6, false);
+  });
+  if (best == null) {
+    eachChunk(sim, (c) => {
+      if (c.x + c.w < unit * (ROBO_M + 2) || c.x > unit * (ROBO_M + 30)) return;
+      consider(c, c.x + c.w * 0.5, true);
+    });
+  }
+  if (best == null || bestD > unit * 24) return;
+  sim.chogX = best;
+  sim.chog = "stand";
+}
+
+function riderHitsObstacle(sim: Sim): boolean {
+  const frame = chogRideFrame(sim);
+  if (!frame) return false;
+  const box = rectOf(frame);
+  const L = sim.layout;
+  let hit = false;
+  eachPlat(sim, (top, left, right) => {
+    if (hit) return;
+    const deck = { left, right, top, bottom: top + L.playerH * 0.14 };
+    if (overlapRect(box, deck)) hit = true;
+  });
+  if (hit) return true;
+  eachChunk(sim, (c) => {
+    if (hit) return;
+    if (c.barrierH > 0) {
+      const meters = metersAt(sim, c.x + c.barrierOff);
+      const cone = meters >= ROBO_M && meters < BLUE_M;
+      const bw = cone ? L.playerH * 0.3 : c.barrierW;
+      const bh = cone ? L.playerH * 0.68 : c.barrierH;
+      const cx = c.x + c.barrierOff + c.barrierW / 2;
+      const left = cone ? cx - bw / 2 : c.x + c.barrierOff;
+      const feet = L.groundY - c.barrierDrop;
+      const obstacle = { left, right: left + bw, top: feet - bh, bottom: feet };
+      if (overlapRect(box, obstacle)) hit = true;
+    }
+    if (hit || c.airW <= 0 || c.airH <= 0) return;
+    const meters = Math.max(0, c.x + c.airOff) / (L.playerH * METER_K);
+    if (meters >= BLUE_M) return;
+    const drop = crowMotionDrop(c, sim.runT, L.playerH);
+    const gull = meters >= ROBO_M;
+    const crow = crowHitBox(L, c.x + c.airOff, drop, c.airW, c.airH, gull ? SEAGULL_SCALE : 1);
+    if (overlapRect(box, { left: crow.left, right: crow.right, top: crow.top, bottom: crow.bottom })) hit = true;
+  });
+  if (hit) return true;
+  for (const rat of sim.rats) {
+    const ratBoxH = L.playerH * 0.3;
+    const obstacle = {
+      left: rat.x - L.playerH * 0.16,
+      right: rat.x + L.playerH * 0.16,
+      top: (rat.feet || L.groundY) - ratBoxH,
+      bottom: rat.feet || L.groundY,
+    };
+    if (overlapRect(box, obstacle)) return true;
+  }
+  return false;
+}
+
+function stepChog(sim: Sim): void {
+  if (sim.phase !== "run") return;
+  placeChog(sim);
+  if (sim.chog === "stand") {
+    const frame = chogStandFrame(sim);
+    if (frame && overlapRect(playerBox(sim), rectOf(frame))) {
+      sim.chog = "ride";
+      sim.chogs = 1;
+    }
+    return;
+  }
+  if (sim.chog === "ride" && riderHitsObstacle(sim)) {
+    sim.chog = "down";
+    sim.chogX = footX(sim);
+  }
+}
+
 export function swipePopStrength(upPx: number, upPxPerSec: number): number {
   const distN = clamp((upPx - 12) / 100, 0, 1);
   const speedN = clamp((upPxPerSec - 180) / 1080, 0, 1);
@@ -3064,6 +3258,8 @@ function step(sim: Sim, dt: number, jumpEdge: boolean, held: boolean, flyX: numb
     die(sim, "gap", events);
     return;
   }
+
+  stepChog(sim);
 
   finishStep(sim, events);
 }

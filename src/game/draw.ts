@@ -6,7 +6,7 @@
  * Anchor: feet on sim.y, shell centered on playerX, facing right.
  * Sprite height is 0.8 of the collision height so he matches the old shell.
  */
-import { crowMotionDrop, lettuceWorldY, METER_K, ROBO_M, JET_M, BLUE_M, SKATES_M, SEAGULL_SCALE, SHELL_SLIDE_SCALE, speedRange, FLY_BIRD, FLY_MOUCH, FLY_BODY_W, FLY_BODY_H, eachChunk, type Chunk, type Events, type Gear, type Sim } from "./sim";
+import { crowMotionDrop, lettuceWorldY, METER_K, ROBO_M, JET_M, BLUE_M, SKATES_M, SEAGULL_SCALE, SHELL_SLIDE_SCALE, speedRange, speedAt, FLY_BIRD, FLY_MOUCH, FLY_BODY_W, FLY_BODY_H, eachChunk, chogStandFrame, chogRideFrame, chogDownFrame, type Chunk, type Events, type Gear, type Layout, type Sim } from "./sim";
 
 const RUN_FPS = 10;
 const BANNER_IN = 0.34;
@@ -116,6 +116,13 @@ const treesDay = loadStill(`${new URL("./trees-day.jpg", import.meta.url).href}?
 const treesDusk = loadStill(`${new URL("./trees-dusk.jpg", import.meta.url).href}?v=1`);
 const labsImg = loadStill(`${new URL("./labs-edge.webp", import.meta.url).href}?v=1`, true);
 const emoImg = loadStill(`${new URL("./emo.png", import.meta.url).href}?v=1`);
+const vanImg = loadStill(`${new URL("./van.png", import.meta.url).href}?v=1`);
+const sealImg = loadStill(`${new URL("./seal.png", import.meta.url).href}?v=1`);
+const chogStandImg = loadStill(`${new URL("./chog-stand.png", import.meta.url).href}?v=1`);
+const chogRideImg = loadStill(`${new URL("./chog-ride.png", import.meta.url).href}?v=1`);
+const chogDownImg = loadStill(`${new URL("./chog-down.png", import.meta.url).href}?v=1`);
+/** Monchel is drawn at 0.8 of playerH. The seal is a little taller. */
+const SEAL_H = 0.96;
 /** Glass Heart is the emo track. The cameo only exists while it is the active song. */
 const EMO_TRACK = 2;
 /** Monchel is drawn at 0.8 of playerH. This cameo stands a little taller. */
@@ -127,6 +134,7 @@ export function setActiveTrack(index: number): void {
 }
 
 let emoLock: { seed: number; h: number; x: number } | null = null;
+let sealLock: { seed: number; h: number; x: number } | null = null;
 
 function stillReady(img: HTMLImageElement | null): img is HTMLImageElement {
   return !!img && img.complete && img.naturalWidth > 0;
@@ -510,6 +518,167 @@ function drawEmoCameo(ctx: CanvasRenderingContext2D, sim: Sim): void {
   ctx.restore();
 }
 
+/** Whole van sprite, including the roof critter. A little over twice Monchel's height. */
+const VAN_H = 2.4;
+const VAN_LEAD = 5;
+const VAN_APPROACH = 2.5;
+
+function secondsAcross(layout: Layout, x0: number, x1: number): number {
+  if (x1 <= x0) return 0;
+  const steps = 10;
+  const dx = (x1 - x0) / steps;
+  let t = 0;
+  let x = x0;
+  for (let i = 0; i < steps; i++) {
+    t += dx / Math.max(40, speedAt(x, layout));
+    x += dx;
+  }
+  return t;
+}
+
+/** Screen X of the van center. Null when it is not in the stage 3→4 cameo. */
+export function vanScreenX(layout: Layout, worldX: number, vanW: number): number | null {
+  const jetX = JET_M * layout.playerH * METER_K;
+  const v3 = speedAt(Math.max(0, jetX - 8), layout);
+  const beside = layout.playerX + layout.playerH * 1.15 + vanW * 0.5;
+  const off = layout.w + vanW * 0.55;
+  if (worldX < jetX) {
+    const remain = secondsAcross(layout, worldX, jetX);
+    if (remain > VAN_LEAD) return null;
+    const u = VAN_LEAD - remain;
+    if (u < VAN_APPROACH) {
+      const t = u / VAN_APPROACH;
+      const e = t * t * (3 - 2 * t);
+      return off + (beside - off) * e;
+    }
+    return beside;
+  }
+  const after = secondsAcross(layout, jetX, worldX);
+  const sx = beside + v3 * after - (worldX - jetX);
+  if (sx < -vanW * 0.75) return null;
+  return sx;
+}
+
+function drawVan(ctx: CanvasRenderingContext2D, sim: Sim): void {
+  if (sim.phase !== "run" && sim.phase !== "dead") return;
+  if (!stillReady(vanImg)) return;
+  const L = sim.layout;
+  const h = L.playerH * VAN_H;
+  const w = h * (vanImg.naturalWidth / vanImg.naturalHeight);
+  const sx = vanScreenX(L, sim.worldX, w);
+  if (sx == null) return;
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(vanImg, sx - w / 2, L.groundY - h * 0.96, w, h);
+  ctx.restore();
+}
+
+export function sealWorldX(sim: Sim): number | null {
+  const L = sim.layout;
+  if (sealLock && sealLock.seed === sim.seed && sealLock.h === L.playerH) return sealLock.x;
+  const unit = L.playerH * METER_K;
+  const meters = 10 + hash(sim.seed * 41 + 3) * (SKATES_M - 18);
+  const want = unit * meters;
+  const metersOf = (x: number) => Math.max(0, x) / unit;
+  const found: { c: Chunk | null } = { c: null };
+  eachChunk(sim, (c) => {
+    if (!found.c && want >= c.x && want < c.x + c.w) found.c = c;
+  });
+  if (!found.c) return null;
+  const pad = L.playerH * 0.5;
+  const blocked = (c: Chunk, x: number) => {
+    if (c.gap || x < c.x || x >= c.x + c.w) return true;
+    const spans: Array<[number, number]> = [];
+    if (c.barrierH > 0) spans.push([c.x + c.barrierOff, c.x + c.barrierOff + Math.max(c.barrierW, 8)]);
+    const decks: Array<[number, number]> = [
+      [c.platOff, c.platW],
+      [c.plat2Off, c.plat2W],
+      [c.plat3Off, c.plat3W],
+      [c.plat4Off, c.plat4W],
+    ];
+    for (const [off, w] of decks) {
+      if (w > 0) spans.push([c.x + off, c.x + off + w]);
+    }
+    for (const [a, b] of spans) {
+      if (x > a - pad && x < b + pad) return true;
+    }
+    return false;
+  };
+  const open = (c: Chunk, x: number) => {
+    const m = metersOf(x);
+    return m >= 8 && m < SKATES_M - 2 && !blocked(c, x);
+  };
+  let bestX: number | null = null;
+  let bestD = Infinity;
+  const consider = (c: Chunk, x: number) => {
+    if (!open(c, x)) return;
+    const d = Math.abs(x - want);
+    if (d < bestD) {
+      bestD = d;
+      bestX = x;
+    }
+  };
+  consider(found.c, want);
+  eachChunk(sim, (c) => {
+    if (c.gap) return;
+    const mid = metersOf(c.x + c.w * 0.5);
+    if (mid < 8 || mid >= SKATES_M) return;
+    for (let i = 1; i < 7; i++) consider(c, c.x + (c.w * i) / 7);
+  });
+  if (bestX == null || bestD > unit * 18) return null;
+  sealLock = { seed: sim.seed, h: L.playerH, x: bestX };
+  return bestX;
+}
+
+/** True once Monchel's body has gone past the seal. */
+export function sealPassed(sim: Sim): boolean {
+  const x = sealWorldX(sim);
+  return x != null && sim.worldX + sim.shift >= x;
+}
+
+function drawSeal(ctx: CanvasRenderingContext2D, sim: Sim): void {
+  if ((sim.phase !== "run" && sim.phase !== "dead") || !stillReady(sealImg)) return;
+  const x = sealWorldX(sim);
+  if (x == null) return;
+  const L = sim.layout;
+  const sx = worldToScreen(sim, x);
+  const h = L.playerH * SEAL_H;
+  const w = h * (sealImg.naturalWidth / sealImg.naturalHeight);
+  if (sx < -w || sx > L.w + w) return;
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.translate(sx, L.groundY);
+  if (!sealPassed(sim)) ctx.scale(-1, 1);
+  ctx.drawImage(sealImg, -w / 2, -h, w, h);
+  ctx.restore();
+}
+
+function drawChogFrame(
+  ctx: CanvasRenderingContext2D,
+  sim: Sim,
+  img: HTMLImageElement | null,
+  frame: { cx: number; top: number; w: number; h: number } | null,
+): void {
+  if (!frame || !stillReady(img)) return;
+  const sx = worldToScreen(sim, frame.cx);
+  if (sx < -frame.w || sx > sim.layout.w + frame.w) return;
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(img, sx - frame.w / 2, frame.top, frame.w, frame.h);
+  ctx.restore();
+}
+
+function drawChogWorld(ctx: CanvasRenderingContext2D, sim: Sim): void {
+  if (sim.phase !== "run" && sim.phase !== "dead") return;
+  drawChogFrame(ctx, sim, chogStandImg, chogStandFrame(sim));
+  drawChogFrame(ctx, sim, chogDownImg, chogDownFrame(sim));
+}
+
+function drawChogRider(ctx: CanvasRenderingContext2D, sim: Sim): void {
+  if (sim.phase !== "run" && sim.phase !== "dead") return;
+  drawChogFrame(ctx, sim, chogRideImg, chogRideFrame(sim));
+}
+
 function drawNeonSky(ctx: CanvasRenderingContext2D, sim: Sim): void {
   const L = sim.layout;
   const sky = ctx.createLinearGradient(0, 0, 0, L.groundY);
@@ -808,6 +977,9 @@ export function draw(ctx: CanvasRenderingContext2D, view: View, sim: Sim, fx: Fx
     }
   });
 
+  drawVan(ctx, sim);
+  drawSeal(ctx, sim);
+
   eachVisible(sim, (c) => {
     if (sim.blueClear > 0 && c.x < sim.blueClear) return;
     drawPlatform(ctx, sim, c.x + c.platOff, c.platDrop, c.platW);
@@ -861,9 +1033,11 @@ export function draw(ctx: CanvasRenderingContext2D, view: View, sim: Sim, fx: Fx
 
   drawLettuce(ctx, sim);
   drawEmoCameo(ctx, sim);
+  drawChogWorld(ctx, sim);
 
   drawParticles(ctx, sim, fx, false);
   drawMonchel(ctx, sim, fx);
+  drawChogRider(ctx, sim);
   drawParticles(ctx, sim, fx, true);
 
   if (fx.flash > 0) {

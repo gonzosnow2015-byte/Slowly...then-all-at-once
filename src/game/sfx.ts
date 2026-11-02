@@ -1,5 +1,6 @@
 const crunchUrl = new URL("./crunch.wav", import.meta.url).href;
 const jetUrl = new URL("./jet-jump.wav", import.meta.url).href;
+const shoutUrl = new URL("./go-monchel.mp3", import.meta.url).href;
 const TRACKS = [
   "/music/lush-lagoon.mp3",
   "/music/jazz-the-dust.mp3",
@@ -28,6 +29,8 @@ export function createSfx() {
   let crunchLoad: Promise<AudioBuffer | null> | null = null;
   let jetBuf: AudioBuffer | null = null;
   let jetLoad: Promise<AudioBuffer | null> | null = null;
+  let shoutBuf: AudioBuffer | null = null;
+  let shoutLoad: Promise<AudioBuffer | null> | null = null;
 
   function ac(): AudioContext {
     if (!ctx) ctx = new AudioContext();
@@ -212,11 +215,32 @@ export function createSfx() {
     else void loadJet().then((buf) => buf && playSample(buf, 0.16));
   }
 
+  function loadShout(): Promise<AudioBuffer | null> {
+    return loadSample(
+      shoutUrl,
+      () => shoutBuf,
+      (buf) => {
+        shoutBuf = buf;
+      },
+      () => shoutLoad,
+      (p) => {
+        shoutLoad = p;
+      },
+    );
+  }
+
+  function shout(): void {
+    if (muted) return;
+    if (shoutBuf) playSample(shoutBuf, 0.62);
+    else void loadShout().then((buf) => buf && playSample(buf, 0.62));
+  }
+
   return {
     unlock() {
       ac();
       void loadCrunch();
       void loadJet();
+      void loadShout();
       musicEl();
     },
     setMuted(v: boolean) {
@@ -313,6 +337,9 @@ export function createSfx() {
     },
     collect() {
       crunch();
+    },
+    shout() {
+      shout();
     },
     stompRat() {
       tone(740, 0.05, "square", 0.035, 1280);
