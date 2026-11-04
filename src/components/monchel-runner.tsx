@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Music, Volume2, VolumeX } from "lucide-react";
+import { Music, SkipForward, Volume2, VolumeX } from "lucide-react";
 import { createFx, draw, pumpFx, setActiveTrack, type View } from "@/game/draw";
 import { createSfx, EFFECTS_PERCENT, MUSIC_PERCENT } from "@/game/sfx";
 import { loadBoard, recordRun, saveBoard, stageOf, type Board } from "@/game/board";
@@ -23,7 +23,30 @@ import {
   type Sim,
 } from "@/game/sim";
 
+const LOUI_FRAMES = [
+  "/loui/1.png?v=1",
+  "/loui/2.png?v=1",
+  "/loui/3.png?v=1",
+  "/loui/4.png?v=1",
+  "/loui/5.png?v=1",
+  "/loui/6.png?v=1",
+  "/loui/7.png?v=1",
+  "/loui/8.png?v=1",
+  "/loui/9.png?v=1",
+];
+
 const MUTE_KEY = "monchel-muted";
+const HUD_KEY = "monchel-hud";
+
+type Hand = "left" | "right";
+
+function readHand(): Hand {
+  try {
+    return localStorage.getItem(HUD_KEY) === "left" ? "left" : "right";
+  } catch {
+    return "right";
+  }
+}
 
 function readBest(): number {
   return loadBoard().bestScore;
@@ -142,7 +165,7 @@ function bestFacts(board: Board): string {
   return runFacts(meters, board.bestSeconds, board.bestLettuces);
 }
 
-const TRACK_NAMES = ["Lush Lagoon", "Jazz the Dust Away", "Glass Heart", "Deep House Afro", "90s Retro"];
+const TRACK_NAMES = ["Lush Lagoon", "Jazz the Dust Away", "Glass Heart", "Deep House Afro", "90s Retro", "Pipes of Wrath", "VJ Galaxy"];
 const TRACK_KEY = "monchel-track";
 
 function readDefaultTrack(): number {
@@ -155,7 +178,7 @@ function readDefaultTrack(): number {
   }
 }
 
-type OptionsPage = "menu" | "music" | "tracks" | "volume" | "controls";
+type OptionsPage = "menu" | "music" | "tracks" | "volume" | "controls" | "hud";
 
 const CONTROLS_TOUCH = [
   "Tap anywhere to jump",
@@ -183,6 +206,8 @@ function OptionsWindow({
   onTracks,
   onVolume,
   onControls,
+  onHud,
+  onHand,
   onBack,
   onPick,
   onSetDefault,
@@ -191,6 +216,7 @@ function OptionsWindow({
   onMusicScrub,
   onEffectsSample,
   touch,
+  hand,
 }: {
   page: OptionsPage;
   track: number;
@@ -202,6 +228,8 @@ function OptionsWindow({
   onTracks: () => void;
   onVolume: () => void;
   onControls: () => void;
+  onHud: () => void;
+  onHand: (hand: Hand) => void;
   onBack: () => void;
   onPick: (index: number) => void;
   onSetDefault: (index: number) => void;
@@ -210,6 +238,7 @@ function OptionsWindow({
   onMusicScrub: (active: boolean) => void;
   onEffectsSample: () => void;
   touch: boolean;
+  hand: Hand;
 }) {
   const openedAt = useRef(0);
   const fxAt = useRef(0);
@@ -217,7 +246,17 @@ function OptionsWindow({
   if (openedAt.current === 0) openedAt.current = performance.now();
   const nested = page !== "menu";
   const title =
-    page === "tracks" ? "Tracks" : page === "volume" ? "Volume" : page === "controls" ? "Controls" : page === "music" ? "Music settings" : "Options";
+    page === "tracks"
+      ? "Tracks"
+      : page === "volume"
+        ? "Volume"
+        : page === "controls"
+          ? "Controls"
+          : page === "hud"
+            ? "HUD"
+            : page === "music"
+              ? "Music settings"
+              : "Options";
   const sampleEffects = () => {
     const now = performance.now();
     const wait = 140 - (now - fxAt.current);
@@ -280,6 +319,14 @@ function OptionsWindow({
               onClick={onControls}
             >
               Controls
+            </button>
+            <button
+              type="button"
+              data-ui
+              className="min-h-12 rounded-2xl border border-white/15 bg-white/5 px-4 text-left text-base font-semibold"
+              onClick={onHud}
+            >
+              HUD
             </button>
           </div>
         ) : page === "music" ? (
@@ -390,7 +437,7 @@ function OptionsWindow({
               />
             </label>
           </div>
-        ) : (
+        ) : page === "controls" ? (
           <ul className="mt-5 flex max-h-[58vh] flex-col gap-3 overflow-y-auto">
             {(touch ? CONTROLS_TOUCH : CONTROLS_DESKTOP).map((line) => (
               <li
@@ -401,6 +448,33 @@ function OptionsWindow({
               </li>
             ))}
           </ul>
+        ) : (
+          <div className="mt-5 flex flex-col gap-3">
+            {(
+              [
+                ["right", "Right-handed"],
+                ["left", "Left-handed"],
+              ] as const
+            ).map(([id, label]) => {
+              const on = hand === id;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  data-ui
+                  aria-pressed={on}
+                  className={`min-h-12 rounded-2xl border px-4 text-left text-base font-semibold ${
+                    on
+                      ? "border-[#d8b4fe] bg-white/10 shadow-[0_0_16px_rgba(192,132,252,0.45)]"
+                      : "border-white/15 bg-white/5"
+                  }`}
+                  onClick={() => onHand(id)}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
         )}
       </div>
     </div>
@@ -460,9 +534,13 @@ export function MonchelRunner() {
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [optionsPage, setOptionsPage] = useState<OptionsPage>("menu");
   const [track, setTrack] = useState(readDefaultTrack);
+  const trackRef = useRef(readDefaultTrack());
+  trackRef.current = track;
   const [defaultTrack, setDefaultTrack] = useState(readDefaultTrack);
   const [musicPercent, setMusicPercent] = useState(MUSIC_PERCENT);
   const [effectsPercent, setEffectsPercent] = useState(EFFECTS_PERCENT);
+  const [hand, setHand] = useState(readHand);
+  const [chogBanner, setChogBanner] = useState(0);
   scoresOpenRef.current = scoresOpen && (phase === "title" || phase === "dead");
   optionsOpenRef.current = optionsOpen;
 
@@ -1269,6 +1347,11 @@ export function MonchelRunner() {
         suppress = true;
       }
       if (events.collect) audio.collect();
+      if (events.chog) {
+        audio.chog();
+        setChogBanner((n) => n + 1);
+      }
+      if (events.chogFall) audio.chogFall();
       if (events.stomp === "rat" || events.stomp === "both") audio.stompRat();
       if (events.stomp === "coyote" || events.stomp === "both") audio.stompCoyote();
       if (events.slide) audio.slide();
@@ -1305,6 +1388,7 @@ export function MonchelRunner() {
       if (sim.phase !== phaseMirror) {
         phaseMirror = sim.phase;
         if (sim.phase === "dead") {
+          setChogBanner(0);
           const nextBoard = recordRun(loadBoard(), {
             score: sim.points,
             meters: sim.score,
@@ -1437,8 +1521,9 @@ export function MonchelRunner() {
       )}
 
       {phase === "dead" && (
-        <div className="pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center px-6 text-center">
-          <div aria-live="polite" className="max-w-sm">
+        <div className="pointer-events-none absolute inset-0 z-30 flex flex-col">
+          <div className="death-copy">
+            <div aria-live="polite" className="max-w-sm">
             <p className="text-xs font-medium tracking-widest text-accent uppercase">
               {newBest ? "New best" : "Wiped out"}
             </p>
@@ -1478,9 +1563,25 @@ export function MonchelRunner() {
               Best {showScore(board.bestScore)}
               {bestFacts(board) ? ` · ${bestFacts(board)}` : ""}
             </p>
-            <p className="mt-3 text-sm text-muted">Tap or hold space</p>
+            </div>
           </div>
+          {cause === "gap" && <div className="pointer-events-none shrink-0" style={{ height: "calc(7.5vh + 4.6rem)" }} aria-hidden="true" />}
         </div>
+      )}
+
+      {phase === "dead" && cause === "gap" && (
+        <div className="loui-pop pointer-events-none absolute right-0 bottom-0 z-10 overflow-hidden" style={{ height: "23vh", width: "22vh" }} aria-hidden="true">
+          {LOUI_FRAMES.map((src, i) => (
+            <img key={src} src={src} alt="" className="loui-frame absolute top-0 max-w-none" style={{ height: "28.75vh", width: "28.75vh", right: "-8vh", animationDelay: `${i * 0.14}s` }} />
+          ))}
+        </div>
+      )}
+
+      {phase === "dead" && cause === "gap" && (
+        <p className="purged loui-pop pointer-events-none absolute z-20" aria-hidden="true">
+          <span>Purged!</span>
+          Purged!
+        </p>
       )}
 
       {scoresOpen && (phase === "title" || phase === "dead") && (
@@ -1502,7 +1603,17 @@ export function MonchelRunner() {
           onTracks={() => setOptionsPage("tracks")}
           onVolume={() => setOptionsPage("volume")}
           onControls={() => setOptionsPage("controls")}
+          onHud={() => setOptionsPage("hud")}
+          onHand={(next) => {
+            setHand(next);
+            try {
+              localStorage.setItem(HUD_KEY, next);
+            } catch {
+              /* ignore */
+            }
+          }}
           touch={touchJump}
+          hand={hand}
           onBack={() => {
             audioRef.current?.stopPreview();
             setOptionsPage((current) => (current === "tracks" || current === "volume" ? "music" : "menu"));
@@ -1544,18 +1655,18 @@ export function MonchelRunner() {
           <div className="safe-pad ink-shadow pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-between">
             <div>
               <p className="text-xs tracking-widest text-muted uppercase">Distance</p>
-              <p className="font-display text-5xl leading-none tabular-nums">
+              <p className="font-bangers text-5xl leading-none tabular-nums">
                 <span ref={scoreRef}>0</span>
                 <span className="ml-1 text-lg text-muted">m</span>
               </p>
-              <p className="mt-1 font-display text-2xl leading-none tabular-nums">
+              <p className="mt-1 font-bangers text-2xl leading-none tabular-nums">
                 <span ref={letRef}>0</span>
                 <span className="ml-1 text-lg">🥬</span>
               </p>
             </div>
             <div className="text-right">
               <p className="text-xs tracking-widest text-muted uppercase">Best</p>
-              <p className="font-display text-2xl leading-none tabular-nums">
+              <p className="font-bangers text-2xl leading-none tabular-nums">
                 <span ref={bestRef}>0</span>
               </p>
               <p ref={gearRef} className="mt-2 text-sm font-medium text-primary">
@@ -1572,6 +1683,16 @@ export function MonchelRunner() {
           >
             Tap to hop, hold to jump higher
           </p>
+          {chogBanner > 0 && (
+            <p
+              key={chogBanner}
+              className="chog-banner pointer-events-none absolute inset-x-0 z-20 text-center"
+              onAnimationEnd={() => setChogBanner(0)}
+            >
+              <span aria-hidden="true">Get Chog to the club!</span>
+              Get Chog to the club!
+            </p>
+          )}
         </>
       )}
 
@@ -1582,7 +1703,7 @@ export function MonchelRunner() {
             data-ui
             aria-label={muted ? "Unmute sound effects" : "Mute sound effects"}
             aria-pressed={muted}
-            className="safe-bottom absolute left-4 z-30 grid size-11 place-items-center rounded-full border border-border bg-surface text-fg focus-visible:ring-2 focus-visible:ring-fg"
+            className={`absolute bottom-[max(0.7rem,env(safe-area-inset-bottom))] z-30 grid size-10 place-items-center rounded-full border border-border bg-surface text-fg focus-visible:ring-2 focus-visible:ring-fg ${hand === "left" ? "right-[0.55rem]" : "left-[0.55rem]"}`}
             onClick={() => {
               const next = !mutedRef.current;
               mutedRef.current = next;
@@ -1595,14 +1716,14 @@ export function MonchelRunner() {
               }
             }}
           >
-            {muted ? <VolumeX className="size-5" /> : <Volume2 className="size-5" />}
+            {muted ? <VolumeX className="size-4" /> : <Volume2 className="size-4" />}
           </button>
           <button
             type="button"
             data-ui
             aria-label={musicMuted ? "Unmute music" : "Mute music"}
             aria-pressed={musicMuted}
-            className="safe-bottom absolute left-[4.5rem] z-30 grid size-11 place-items-center rounded-full border border-border bg-surface text-fg focus-visible:ring-2 focus-visible:ring-fg"
+            className={`absolute bottom-[max(0.7rem,env(safe-area-inset-bottom))] z-30 grid size-10 place-items-center rounded-full border border-border bg-surface text-fg focus-visible:ring-2 focus-visible:ring-fg ${hand === "left" ? "right-[3.45rem]" : "left-[3.45rem]"}`}
             onClick={() => {
               const next = !musicMutedRef.current;
               musicMutedRef.current = next;
@@ -1610,10 +1731,25 @@ export function MonchelRunner() {
               setMusicMuted(next);
             }}
           >
-            <span className="relative grid size-5 place-items-center">
-              <Music className="size-5" />
-              {musicMuted && <span className="absolute h-0.5 w-6 rotate-45 rounded-full bg-current" />}
+            <span className="relative grid size-4 place-items-center">
+              <Music className="size-4" />
+              {musicMuted && <span className="absolute h-0.5 w-5 rotate-45 rounded-full bg-current" />}
             </span>
+          </button>
+          <button
+            type="button"
+            data-ui
+            aria-label="Next track"
+            className={`absolute bottom-[calc(max(0.7rem,env(safe-area-inset-bottom))+2.95rem)] z-30 grid size-10 place-items-center rounded-full border border-border bg-surface text-fg focus-visible:ring-2 focus-visible:ring-fg ${hand === "left" ? "right-[0.55rem]" : "left-[0.55rem]"}`}
+            onClick={() => {
+              const next = (trackRef.current + 1) % TRACK_NAMES.length;
+              trackRef.current = next;
+              setTrack(next);
+              setActiveTrack(next);
+              audioRef.current?.setTrack(next);
+            }}
+          >
+            <SkipForward className="size-4" />
           </button>
         </>
       )}

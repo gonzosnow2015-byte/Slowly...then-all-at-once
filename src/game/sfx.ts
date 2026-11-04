@@ -1,12 +1,16 @@
 const crunchUrl = new URL("./crunch.wav", import.meta.url).href;
 const jetUrl = new URL("./jet-jump.wav", import.meta.url).href;
 const shoutUrl = new URL("./go-monchel.mp3", import.meta.url).href;
+const chogUrl = new URL("./chog-pickup.wav", import.meta.url).href;
+const chogFallUrl = new URL("./chog-fall.mp3", import.meta.url).href;
 const TRACKS = [
   "/music/lush-lagoon.mp3",
   "/music/jazz-the-dust.mp3",
   "/music/glass-heart.mp3",
   "/music/deep-house-afro.mp3",
   "/music/90s-retro.mp3",
+  "/music/pipes-of-wrath.mp3",
+  "/music/vj-galaxy.mp3",
 ];
 
 /** Slider percents. Music starts a step under effects. */
@@ -31,6 +35,10 @@ export function createSfx() {
   let jetLoad: Promise<AudioBuffer | null> | null = null;
   let shoutBuf: AudioBuffer | null = null;
   let shoutLoad: Promise<AudioBuffer | null> | null = null;
+  let chogBuf: AudioBuffer | null = null;
+  let chogLoad: Promise<AudioBuffer | null> | null = null;
+  let chogFallBuf: AudioBuffer | null = null;
+  let chogFallLoad: Promise<AudioBuffer | null> | null = null;
 
   function ac(): AudioContext {
     if (!ctx) ctx = new AudioContext();
@@ -235,12 +243,54 @@ export function createSfx() {
     else void loadShout().then((buf) => buf && playSample(buf, 0.62));
   }
 
+  function loadChog(): Promise<AudioBuffer | null> {
+    return loadSample(
+      chogUrl,
+      () => chogBuf,
+      (buf) => {
+        chogBuf = buf;
+      },
+      () => chogLoad,
+      (p) => {
+        chogLoad = p;
+      },
+    );
+  }
+
+  function chog(): void {
+    if (muted) return;
+    if (chogBuf) playSample(chogBuf, 0.3);
+    else void loadChog().then((buf) => buf && playSample(buf, 0.3));
+  }
+
+  function loadChogFall(): Promise<AudioBuffer | null> {
+    return loadSample(
+      chogFallUrl,
+      () => chogFallBuf,
+      (buf) => {
+        chogFallBuf = buf;
+      },
+      () => chogFallLoad,
+      (p) => {
+        chogFallLoad = p;
+      },
+    );
+  }
+
+  function chogFall(): void {
+    if (muted) return;
+    if (chogFallBuf) playSample(chogFallBuf, 0.3);
+    else void loadChogFall().then((buf) => buf && playSample(buf, 0.3));
+  }
+
   return {
     unlock() {
       ac();
       void loadCrunch();
       void loadJet();
       void loadShout();
+      void loadChog();
+      void loadChogFall();
       musicEl();
     },
     setMuted(v: boolean) {
@@ -340,6 +390,12 @@ export function createSfx() {
     },
     shout() {
       shout();
+    },
+    chog() {
+      chog();
+    },
+    chogFall() {
+      chogFall();
     },
     stompRat() {
       tone(740, 0.05, "square", 0.035, 1280);

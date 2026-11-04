@@ -109,6 +109,10 @@ export type Events = {
   stomp: "rat" | "coyote" | "both" | null;
   /** Shell slide just started. */
   slide: boolean;
+  /** Chog was picked up this frame. */
+  chog: boolean;
+  /** Chog hit something and fell off this frame. */
+  chogFall: boolean;
 };
 
 export type Control = {
@@ -175,6 +179,8 @@ export type Sim = {
   acc: number;
   anim: number;
   deathT: number;
+  /** Straight drop through a hole, before the death screen. */
+  pitFall: boolean;
   /** Distance, in meters. The live readout during a run. */
   score: number;
   /** Seconds spent in the current run. */
@@ -182,10 +188,18 @@ export type Sim = {
   lettuces: number;
   /** 1 once Chog is picked up. Added to the end score, not per second. */
   chogs: number;
-  /** wait until the street chunk exists, then stand, ride, or down. */
-  chog: "wait" | "stand" | "ride" | "down";
-  /** World x while he is standing or lying. Ignored while riding. */
+  /** wait until the stage 2 chunk exists, then stand, ride, fall, down, or wave. */
+  chog: "wait" | "stand" | "ride" | "fall" | "down" | "wave";
+  /** World x while he is standing, falling, lying, or waving. Ignored while riding. */
   chogX: number;
+  /** Feet y while standing. 0 until he is placed. */
+  chogFeet: number;
+  /** Sprite top when a fall starts. */
+  chogTop: number;
+  /** Seconds already spent in the fall. */
+  chogFall: number;
+  /** What he becomes when the fall reaches the ground. */
+  chogLand: "down" | "wave";
   /** Combined end-of-run score. 0 until the run ends. */
   points: number;
   best: number;
@@ -226,6 +240,10 @@ export const SKATES_M = 100;
 export const ROBO_M = 200;
 export const JET_M = 300;
 export const BLUE_M = 400;
+/** Stage 6 starts after 100 m of stage 5. Same flight, double the stage 5 speed. */
+export const WARP_M = BLUE_M + 100;
+/** John stands here. A gap must not open under his feet. */
+export const JOHN_M = 7;
 /** Stage 5 flyer slots. 1 is the later bird sprite, 2 is Mouch. */
 export const FLY_BIRD = 1;
 export const FLY_MOUCH = 2;
@@ -340,6 +358,7 @@ export function speedRange(layout: Layout): { base: number; max: number } {
 export function speedAt(x: number, layout: Layout): number {
   const { base, max } = speedRange(layout);
   const meters = Math.max(0, x) / (layout.playerH * METER_K);
+  if (meters >= WARP_M) return widePace(layout, max * 1.82 * 2);
   if (meters >= BLUE_M) {
     const over = clamp((meters - BLUE_M) / 50, 0, 1);
     // Still a hard jump from the jet, but slow enough to fly a short stretch.
@@ -485,12 +504,17 @@ export function createSim(layout: Layout, opts: { seed: number; best: number }):
     acc: 0,
     anim: 0,
     deathT: 0,
+    pitFall: false,
     score: 0,
     runT: 0,
     lettuces: 0,
     chogs: 0,
     chog: "wait",
     chogX: 0,
+    chogFeet: 0,
+    chogTop: 0,
+    chogFall: 0,
+    chogLand: "down",
     points: 0,
     best: opts.best,
     newBest: false,
@@ -1557,6 +1581,17 @@ function placeFlyer(sim: Sim, high: boolean, kind: number): void {
   c.flyDrop = clamp(drop, L.playerH * 0.5, maxDrop);
 }
 
+function johnGround(sim: Sim): { left: number; right: number } {
+  const half = sim.layout.playerH * 0.7;
+  const cx = sim.layout.playerH * METER_K * JOHN_M;
+  return { left: cx - half, right: cx + half };
+}
+
+function gapHitsJohn(sim: Sim, x: number, w: number): boolean {
+  const g = johnGround(sim);
+  return x < g.right && x + w > g.left;
+}
+
 function spawnGap(sim: Sim, gear: Gear, kind: GapW): boolean {
   const L = sim.layout;
   const speed = speedAt(sim.cursor, L);
@@ -1577,6 +1612,7 @@ function spawnGap(sim: Sim, gear: Gear, kind: GapW): boolean {
   const min = Math.min(maxGap, Math.max(minGap, cover * lo));
   const w = min + sim.rand() * Math.max(0, maxGap - min);
   const c = pushChunk(sim, Math.min(w, cover * 0.75), true);
+  if (c && gapHitsJohn(sim, c.x, c.w)) c.gap = false;
   if (c) maybeLettuce(sim, c, gear === "shell" ? 0.22 : gear === "skates" ? 0.32 : 0.4);
   return c != null;
 }
@@ -2724,6 +2760,12 @@ const CHOG_STAND_H = 0.78;
 const CHOG_STAND_ASPECT = 661 / 1127;
 const CHOG_RIDE_ASPECT = 805 / 981;
 const CHOG_DOWN_ASPECT = 1253 / 632;
+const CHOG_FALL_ASPECT = 857 / 1053;
+const CHOG_WAVE_ASPECT = 710 / 1131;
+/** How long the mid-air pose stays visible before he hits the ground. */
+export const CHOG_FALL_T = 0.45;
+/** Meters into the run where a riding Chog hops off and waves. */
+const CHOG_EXIT_M = 232;
 
 function monchelSpriteH(sim: Sim): number {
   const stage = sim.gear === "skates" || sim.gear === "robo" || sim.gear === "jet" ? 1.1025 : 1;
@@ -2736,8 +2778,9 @@ export type ChogFrame = { cx: number; top: number; w: number; h: number };
 /** Standing sprite, before pickup. cx is world x. */
 export function chogStandFrame(sim: Sim): ChogFrame | null {
   if (sim.chog !== "stand") return null;
-  const h = sim.layout.playerH * CHOG_STAND_H;
-  return { cx: sim.chogX, top: sim.layout.groundY - h, w: h * CHOG_STAND_ASPECT, h };
+  const h = sim.layout.playerH * CHOG_STAND_H * 1.2;
+  const feet = sim.chogFeet > 0 ? sim.chogFeet : sim.layout.groundY;
+  return { cx: sim.chogX, top: feet - h, w: h * CHOG_STAND_ASPECT, h };
 }
 
 /** Lying sprite left on the road after he is knocked off. */
@@ -2747,11 +2790,45 @@ export function chogDownFrame(sim: Sim): ChogFrame | null {
   return { cx: sim.chogX, top: sim.layout.groundY - h, w: h * CHOG_DOWN_ASPECT, h };
 }
 
+function chogFallH(sim: Sim): number {
+  return sim.layout.playerH * CHOG_STAND_H * 1.2;
+}
+
+/** Mid-air pose, moving from the shell down to the road. */
+export function chogFallFrame(sim: Sim): ChogFrame | null {
+  if (sim.chog !== "fall" || sim.phase === "dead") return null;
+  const h = chogFallH(sim);
+  const end = sim.layout.groundY - h;
+  const u = Math.min(1, sim.chogFall / CHOG_FALL_T);
+  const top = sim.chogTop + (end - sim.chogTop) * u;
+  return { cx: sim.chogX, top, w: h * CHOG_FALL_ASPECT, h };
+}
+
+/** Waving sprite left on the road at the Stage 3 goodbye. */
+export function chogWaveFrame(sim: Sim): ChogFrame | null {
+  if (sim.chog !== "wave") return null;
+  const h = sim.layout.playerH * CHOG_STAND_H * 1.2;
+  return { cx: sim.chogX, top: sim.layout.groundY - h, w: h * CHOG_WAVE_ASPECT, h };
+}
+
+/** Lying pose beside Monchel on the death screen. */
+export function chogDeathFrame(sim: Sim): ChogFrame | null {
+  if (sim.phase !== "dead" || sim.chog !== "ride") return null;
+  const h = (sim.layout.playerH * CHOG_STAND_H) / CHOG_DOWN_ASPECT;
+  const w = h * CHOG_DOWN_ASPECT;
+  return {
+    cx: footX(sim) - w * 0.72,
+    top: sim.layout.groundY - h,
+    w,
+    h,
+  };
+}
+
 /** Riding sprite anchored on Monchel's shell. cx is world x. */
 export function chogRideFrame(sim: Sim): ChogFrame | null {
-  if (sim.chog !== "ride") return null;
+  if (sim.chog !== "ride" || sim.phase === "dead") return null;
   const mh = monchelSpriteH(sim);
-  const h = mh * (sim.shelling ? 0.62 : 0.5);
+  const h = mh * (sim.shelling ? 0.465 : 0.375) * 2.25;
   const bottom = sim.y - mh * (sim.shelling ? 0.78 : 0.68);
   return { cx: footX(sim) - mh * 0.06, top: bottom - h, w: h * CHOG_RIDE_ASPECT, h };
 }
@@ -2804,7 +2881,7 @@ function placeChog(sim: Sim): void {
   if (sim.chog !== "wait") return;
   const L = sim.layout;
   const unit = L.playerH * METER_K;
-  const meters = ROBO_M + 7 + hash01(sim.seed * 23 + 11) * 10;
+  const meters = SKATES_M + 7 + hash01(sim.seed * 23 + 11) * 10;
   const want = meters * unit;
   let cover: Chunk | null = null;
   eachChunk(sim, (c) => {
@@ -2818,7 +2895,7 @@ function placeChog(sim: Sim): void {
     if (!loose && chogBlocked(sim, c, x)) return;
     if (loose && (x < c.x + 10 || x > c.x + c.w - 10)) return;
     const m = x / unit;
-    if (m < ROBO_M + 2 || m > JET_M - 4) return;
+    if (m < SKATES_M + 2 || m > SKATES_M + 28) return;
     const d = Math.abs(x - want);
     if (d < bestD) {
       bestD = d;
@@ -2826,18 +2903,42 @@ function placeChog(sim: Sim): void {
     }
   };
   eachChunk(sim, (c) => {
-    if (c.x + c.w < unit * (ROBO_M + 2) || c.x > unit * (ROBO_M + 30)) return;
+    if (c.x + c.w < unit * (SKATES_M + 2) || c.x > unit * (SKATES_M + 30)) return;
     consider(c, want >= c.x && want < c.x + c.w ? want : c.x + c.w * 0.5, false);
     for (let i = 1; i < 6; i++) consider(c, c.x + (c.w * i) / 6, false);
   });
   if (best == null) {
     eachChunk(sim, (c) => {
-      if (c.x + c.w < unit * (ROBO_M + 2) || c.x > unit * (ROBO_M + 30)) return;
+      if (c.x + c.w < unit * (SKATES_M + 2) || c.x > unit * (SKATES_M + 30)) return;
       consider(c, c.x + c.w * 0.5, true);
     });
   }
+  const plats: { x: number; feet: number }[] = [];
+  eachChunk(sim, (c) => {
+    if (c.gap) return;
+    if (c.x + c.w < unit * (SKATES_M + 2) || c.x > unit * (SKATES_M + 30)) return;
+    eachDeck(c, (off, w, drop) => {
+      if (w < L.playerW * 0.9 || drop <= 0) return;
+      const x = c.x + off + w * 0.5;
+      const m = x / unit;
+      if (m < SKATES_M + 2 || m > SKATES_M + 28) return;
+      if (c.barrierH > 0) {
+        const bx = c.x + c.barrierOff + Math.max(c.barrierW, 0) * 0.5;
+        if (Math.abs(x - bx) < L.playerH * 0.45 && Math.abs(c.barrierDrop - drop) < L.playerH * 0.35) return;
+      }
+      plats.push({ x, feet: L.groundY - drop });
+    });
+  });
+  if (plats.length > 0 && hash01(sim.seed * 17 + 5) < 0.5) {
+    const spot = plats[Math.floor(hash01(sim.seed * 29 + 3) * plats.length)]!;
+    sim.chogX = spot.x;
+    sim.chogFeet = spot.feet;
+    sim.chog = "stand";
+    return;
+  }
   if (best == null || bestD > unit * 24) return;
   sim.chogX = best;
+  sim.chogFeet = L.groundY;
   sim.chog = "stand";
 }
 
@@ -2847,61 +2948,89 @@ function riderHitsObstacle(sim: Sim): boolean {
   const box = rectOf(frame);
   const L = sim.layout;
   let hit = false;
-  eachPlat(sim, (top, left, right) => {
-    if (hit) return;
-    const deck = { left, right, top, bottom: top + L.playerH * 0.14 };
-    if (overlapRect(box, deck)) hit = true;
-  });
-  if (hit) return true;
   eachChunk(sim, (c) => {
     if (hit) return;
-    if (c.barrierH > 0) {
-      const meters = metersAt(sim, c.x + c.barrierOff);
-      const cone = meters >= ROBO_M && meters < BLUE_M;
-      const bw = cone ? L.playerH * 0.3 : c.barrierW;
-      const bh = cone ? L.playerH * 0.68 : c.barrierH;
-      const cx = c.x + c.barrierOff + c.barrierW / 2;
-      const left = cone ? cx - bw / 2 : c.x + c.barrierOff;
-      const feet = L.groundY - c.barrierDrop;
-      const obstacle = { left, right: left + bw, top: feet - bh, bottom: feet };
-      if (overlapRect(box, obstacle)) hit = true;
+    if (c.flyKind > 0) {
+      const fly = flyHitBox(L, c);
+      if (overlapRect(box, fly)) hit = true;
+      return;
     }
-    if (hit || c.airW <= 0 || c.airH <= 0) return;
+    if (c.airW <= 0 || c.airH <= 0) return;
     const meters = Math.max(0, c.x + c.airOff) / (L.playerH * METER_K);
     if (meters >= BLUE_M) return;
     const drop = crowMotionDrop(c, sim.runT, L.playerH);
     const gull = meters >= ROBO_M;
     const crow = crowHitBox(L, c.x + c.airOff, drop, c.airW, c.airH, gull ? SEAGULL_SCALE : 1);
-    if (overlapRect(box, { left: crow.left, right: crow.right, top: crow.top, bottom: crow.bottom })) hit = true;
+    if (overlapRect(box, crow)) hit = true;
   });
   if (hit) return true;
+  const hw = L.playerH * 0.16;
   for (const rat of sim.rats) {
-    const ratBoxH = L.playerH * 0.3;
+    const feet = rat.feet || L.groundY;
     const obstacle = {
-      left: rat.x - L.playerH * 0.16,
-      right: rat.x + L.playerH * 0.16,
-      top: (rat.feet || L.groundY) - ratBoxH,
-      bottom: rat.feet || L.groundY,
+      left: rat.x - hw,
+      right: rat.x + hw,
+      top: feet - L.playerH * 0.3,
+      bottom: feet,
+    };
+    if (overlapRect(box, obstacle)) return true;
+  }
+  for (const coyote of sim.coyotes) {
+    if (coyote.stun > 0) continue;
+    const feet = coyote.feet || L.groundY;
+    const body = coyote.x + coyote.dir * L.playerH * 0.08;
+    const obstacle = {
+      left: body - hw,
+      right: body + hw,
+      top: feet - L.playerH * 0.34,
+      bottom: feet,
     };
     if (overlapRect(box, obstacle)) return true;
   }
   return false;
 }
 
-function stepChog(sim: Sim): void {
+function beginChogFall(sim: Sim, land: "down" | "wave"): void {
+  const ride = chogRideFrame(sim);
+  const h = chogFallH(sim);
+  sim.chogLand = land;
+  if (!ride) {
+    sim.chogX = footX(sim);
+    sim.chog = land;
+    return;
+  }
+  sim.chogX = ride.cx;
+  sim.chogTop = ride.top + ride.h / 2 - h / 2;
+  sim.chogFall = 0;
+  sim.chog = "fall";
+}
+
+function stepChog(sim: Sim, dt: number, events: Events): void {
   if (sim.phase !== "run") return;
   placeChog(sim);
+  if (sim.chog === "fall") {
+    sim.chogFall += dt;
+    if (sim.chogFall >= CHOG_FALL_T) sim.chog = sim.chogLand;
+    return;
+  }
   if (sim.chog === "stand") {
     const frame = chogStandFrame(sim);
     if (frame && overlapRect(playerBox(sim), rectOf(frame))) {
       sim.chog = "ride";
       sim.chogs = 1;
+      events.chog = true;
     }
     return;
   }
+  if (sim.chog === "ride" && metersOf(sim) >= CHOG_EXIT_M) {
+    const ride = chogRideFrame(sim);
+    sim.chogX = ride ? ride.cx : footX(sim);
+    sim.chog = "wave";
+    return;
+  }
   if (sim.chog === "ride" && riderHitsObstacle(sim)) {
-    sim.chog = "down";
-    sim.chogX = footX(sim);
+    beginChogFall(sim, "down");
+    events.chogFall = true;
   }
 }
 
@@ -2980,7 +3109,7 @@ export function jumpNow(sim: Sim): "ground" | "air" | "blocked" {
     sim.grounded ||
     sim.coyote > 0 ||
     (sim.vy >= 0 && Math.abs(sim.y - L.groundY) <= Math.max(10, L.playerH * 0.08));
-  const events: Events = { jump: false, land: false, die: false, gear: null, collect: false, stomp: null, slide: false };
+  const events: Events = { jump: false, land: false, die: false, gear: null, collect: false, stomp: null, slide: false, chog: false, chogFall: false };
   if (onGround) {
     sim.grounded = true;
     sim.airJumps = maxAirJumps(sim.gear);
@@ -3150,6 +3279,10 @@ function step(sim: Sim, dt: number, jumpEdge: boolean, held: boolean, flyX: numb
   }
 
   const L = sim.layout;
+  if (sim.pitFall || sim.y > L.groundY + L.playerH * 0.48) {
+    fallThroughHole(sim, dt, events);
+    return;
+  }
   const g = L.playerH * GRAVITY_K;
   const fullV = L.playerH * JUMP_V_K;
   const prevY = sim.y;
@@ -3255,13 +3388,25 @@ function step(sim: Sim, dt: number, jumpEdge: boolean, held: boolean, flyX: numb
     return;
   }
   if (sim.y > L.groundY + L.playerH * 0.48) {
-    die(sim, "gap", events);
+    fallThroughHole(sim, dt, events);
     return;
   }
 
-  stepChog(sim);
+  stepChog(sim, dt, events);
 
   finishStep(sim, events);
+}
+
+function fallThroughHole(sim: Sim, dt: number, events: Events): void {
+  const L = sim.layout;
+  sim.pitFall = true;
+  sim.grounded = false;
+  sim.shelling = false;
+  sim.lifting = false;
+  sim.vy = Math.max(sim.vy, L.playerH * 2.4);
+  sim.vy += L.playerH * 18 * dt;
+  sim.y += sim.vy * dt;
+  if (sim.y - L.playerH * 0.9 > L.h) die(sim, "gap", events);
 }
 
 function controlOf(input: boolean | Control): Control {
@@ -3270,11 +3415,11 @@ function controlOf(input: boolean | Control): Control {
 }
 
 export function tick(sim: Sim, frameDt: number, input: boolean | Control): Events {
-  const events: Events = { jump: false, land: false, die: false, gear: null, collect: false, stomp: null, slide: false };
+  const events: Events = { jump: false, land: false, die: false, gear: null, collect: false, stomp: null, slide: false, chog: false, chogFall: false };
   const control = controlOf(input);
   const held = control.held;
   if (sim.phase === "run" || sim.phase === "dead") sim.anim += frameDt;
-  if (sim.phase === "run") sim.runT += Math.min(frameDt, 0.05);
+  if (sim.phase === "run" && !sim.pitFall) sim.runT += Math.min(frameDt, 0.05);
   if (sim.phase === "dead") sim.deathT += frameDt;
   if (sim.phase !== "run") {
     sim.jumpWasDown = false;

@@ -1,0 +1,6 @@
+stable-runner-2026-11-04
+branch: best-stable-pre-hub
+date: 2026-11-04
+note: Stable fallback after King Loui hole-death slide entry was restored on mobile and desktop.
+restore git: git checkout stable-runner-2026-11-04
+restore archive: tar -xzf snapshots/stable-runner-2026-11-04.tar.gz -C /workspace

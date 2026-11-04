@@ -6,26 +6,29 @@
  * Anchor: feet on sim.y, shell centered on playerX, facing right.
  * Sprite height is 0.8 of the collision height so he matches the old shell.
  */
-import { crowMotionDrop, lettuceWorldY, METER_K, ROBO_M, JET_M, BLUE_M, SKATES_M, SEAGULL_SCALE, SHELL_SLIDE_SCALE, speedRange, speedAt, FLY_BIRD, FLY_MOUCH, FLY_BODY_W, FLY_BODY_H, eachChunk, chogStandFrame, chogRideFrame, chogDownFrame, type Chunk, type Events, type Gear, type Layout, type Sim } from "./sim";
+import { crowMotionDrop, lettuceWorldY, METER_K, ROBO_M, JET_M, BLUE_M, WARP_M, SKATES_M, JOHN_M, SEAGULL_SCALE, SHELL_SLIDE_SCALE, speedRange, speedAt, FLY_BIRD, FLY_MOUCH, FLY_BODY_W, FLY_BODY_H, eachChunk, chogStandFrame, chogRideFrame, chogDownFrame, chogFallFrame, chogWaveFrame, chogDeathFrame, metersOf, type Chunk, type Events, type Gear, type Layout, type Sim } from "./sim";
 
 const RUN_FPS = 10;
 const BANNER_IN = 0.34;
 const BANNER_HOLD = 0.95;
 const BANNER_OUT = 0.28;
 const BANNER_LIFE = BANNER_IN + BANNER_HOLD + BANNER_OUT;
+const BANNER_FONT = '700 {size}px "East Sea Dokdo", Outfit, system-ui, sans-serif';
 
-const STAGE_BANNER: Partial<Record<Gear, string>> = {
+function bannerFont(size: number): string {
+  return BANNER_FONT.replace("{size}", String(size));
+}
+
+if (typeof document !== "undefined") {
+  void document.fonts.load('700 64px "East Sea Dokdo"');
+}
+
+const STAGE_BANNER: Partial<Record<Gear | "warp", string>> = {
   skates: "Skates!",
   robo: "Robo-Legs!",
   jet: "Jetpack!",
   bluejet: "Afterburner!",
-};
-
-const BANNER_INK: Partial<Record<Gear, string>> = {
-  skates: "#ffe7a3",
-  robo: "#f3e6ff",
-  jet: "#ffd7b0",
-  bluejet: "#c9edff",
+  warp: "Stage 6!",
 };
 
 const BANNER_NOTE: Partial<Record<Gear, string>> = {
@@ -96,6 +99,7 @@ const jetOnSheet = loadSheet(`${new URL("./monchel-jet-on.png", import.meta.url)
 const ratSheet = loadSheet(`${new URL("./rat.png", import.meta.url).href}?v=1`, 4, 679, 442);
 const coyoteSheet = loadSheet(`${new URL("./coyote.png", import.meta.url).href}?v=1`, 5, 502, 482);
 const shellSlideSheet = loadSheet(`${new URL("./shell-slide.png", import.meta.url).href}?v=1`, 1, 699, 457);
+const deathShellImg = loadStill(`${new URL("./death-shell.png", import.meta.url).href}?v=1`);
 
 function loadStill(url: string, urgent = false): HTMLImageElement | null {
   if (typeof Image === "undefined") return null;
@@ -115,18 +119,24 @@ const streetImg = loadStill(`${new URL("./street.png", import.meta.url).href}?v=
 const treesDay = loadStill(`${new URL("./trees-day.jpg", import.meta.url).href}?v=3`, true);
 const treesDusk = loadStill(`${new URL("./trees-dusk.jpg", import.meta.url).href}?v=1`);
 const labsImg = loadStill(`${new URL("./labs-edge.webp", import.meta.url).href}?v=1`, true);
+const lightspeedImg = loadStill(`${new URL("./lightspeed.png", import.meta.url).href}?v=1`);
 const emoImg = loadStill(`${new URL("./emo.png", import.meta.url).href}?v=1`);
 const vanImg = loadStill(`${new URL("./van.png", import.meta.url).href}?v=1`);
+const camperImg = loadStill(`${new URL("./camper.png", import.meta.url).href}?v=4`);
 const sealImg = loadStill(`${new URL("./seal.png", import.meta.url).href}?v=1`);
+const johnBackImg = loadStill(`${new URL("./john-back.png", import.meta.url).href}?v=2`);
+const johnFrontImg = loadStill(`${new URL("./john-front.png", import.meta.url).href}?v=2`);
 const chogStandImg = loadStill(`${new URL("./chog-stand.png", import.meta.url).href}?v=1`);
 const chogRideImg = loadStill(`${new URL("./chog-ride.png", import.meta.url).href}?v=1`);
-const chogDownImg = loadStill(`${new URL("./chog-down.png", import.meta.url).href}?v=1`);
+const chogDownImg = loadStill(`${new URL("./chog-down.png", import.meta.url).href}?v=2`);
+const chogFallImg = loadStill(`${new URL("./chog-fall.png", import.meta.url).href}?v=1`);
+const chogWaveImg = loadStill(`${new URL("./chog-wave.png", import.meta.url).href}?v=1`);
 /** Monchel is drawn at 0.8 of playerH. The seal is a little taller. */
 const SEAL_H = 0.96;
 /** Glass Heart is the emo track. The cameo only exists while it is the active song. */
 const EMO_TRACK = 2;
 /** Monchel is drawn at 0.8 of playerH. This cameo stands a little taller. */
-const EMO_H = 0.92;
+const EMO_H = 0.92 * 1.25 * 1.25;
 
 let activeTrack = 0;
 export function setActiveTrack(index: number): void {
@@ -206,6 +216,7 @@ const ROAD_CURB = "#eef2f7";
 const ROAD_CURB_STAGE3 = "#d5dce6";
 const NEON = ["#ff2d95", "#00f0ff", "#d06bff", "#ff9a00", "#39ff8a", "#ff5a1f"];
 const SHELL_LITE = "#b79ae6";
+const HOLE_BITS = ["#ff4d12", "#ff7a18", "#ff2a1a", "#ffb033"];
 const BARRIER = "#ffe14a";
 const BARRIER_DARK = "#e0a800";
 const BARRIER_LITE = "#fff6b0";
@@ -251,6 +262,7 @@ export type Particle = {
   max: number;
   size: number;
   kind: "dust" | "flame" | "bit";
+  color: string;
 };
 
 export type Fx = {
@@ -260,10 +272,11 @@ export type Fx = {
   land: number;
   dustAcc: number;
   reduced: boolean;
-  banner: Gear | null;
+  banner: Gear | "warp" | null;
   bannerT: number;
   hint: string | null;
   hintT: number;
+  warpOn: boolean;
 };
 
 export type View = { cssW: number; cssH: number; dpr: number };
@@ -280,6 +293,7 @@ export function createFx(reduced: boolean): Fx {
       max: 1,
       size: 2,
       kind: "dust" as const,
+      color: "",
     })),
     trauma: 0,
     flash: 0,
@@ -290,6 +304,7 @@ export function createFx(reduced: boolean): Fx {
     bannerT: 0,
     hint: null,
     hintT: 0,
+    warpOn: false,
   };
 }
 
@@ -302,6 +317,7 @@ function emit(
   vy: number,
   life: number,
   size: number,
+  color = "",
 ): void {
   for (const p of fx.particles) {
     if (p.on) continue;
@@ -314,6 +330,7 @@ function emit(
     p.life = life;
     p.max = life;
     p.size = size;
+    p.color = color;
     return;
   }
 }
@@ -352,6 +369,7 @@ export function pumpFx(fx: Fx, dt: number, sim: Sim, events: Events): void {
   if (events.die) {
     fx.flash = 1;
     if (!fx.reduced) fx.trauma = 1;
+    const hole = sim.cause === "gap";
     for (let i = 0; i < 12; i++) {
       emit(
         fx,
@@ -362,6 +380,7 @@ export function pumpFx(fx: Fx, dt: number, sim: Sim, events: Events): void {
         -80 - Math.random() * 160,
         0.45 + Math.random() * 0.3,
         2 + Math.random() * 3,
+        hole ? HOLE_BITS[(Math.random() * HOLE_BITS.length) | 0] : "",
       );
     }
   }
@@ -401,6 +420,15 @@ export function pumpFx(fx: Fx, dt: number, sim: Sim, events: Events): void {
   if (fx.banner) {
     fx.bannerT += dt;
     if (fx.bannerT >= BANNER_LIFE) fx.banner = null;
+  }
+  if (sim.phase === "run" && metersOf(sim) >= WARP_M) {
+    if (!fx.warpOn) {
+      fx.warpOn = true;
+      fx.banner = "warp";
+      fx.bannerT = 0;
+    }
+  } else {
+    fx.warpOn = false;
   }
   if (events.gear === "bluejet") {
     const touch =
@@ -573,6 +601,22 @@ function drawVan(ctx: CanvasRenderingContext2D, sim: Sim): void {
   ctx.restore();
 }
 
+const CAMPER_M = 65;
+
+function drawCamper(ctx: CanvasRenderingContext2D, sim: Sim): void {
+  if (sim.phase !== "run" && sim.phase !== "dead") return;
+  if (!stillReady(camperImg)) return;
+  const L = sim.layout;
+  const h = L.playerH * VAN_H * 0.75;
+  const w = h * (camperImg.naturalWidth / camperImg.naturalHeight);
+  const sx = worldToScreen(sim, L.playerH * METER_K * CAMPER_M);
+  if (sx < -w || sx > L.w + w) return;
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(camperImg, sx - w / 2, L.groundY - h * 0.96, w, h);
+  ctx.restore();
+}
+
 export function sealWorldX(sim: Sim): number | null {
   const L = sim.layout;
   if (sealLock && sealLock.seed === sim.seed && sealLock.h === L.playerH) return sealLock.x;
@@ -653,6 +697,30 @@ function drawSeal(ctx: CanvasRenderingContext2D, sim: Sim): void {
   ctx.restore();
 }
 
+function johnWorldX(sim: Sim): number {
+  return sim.layout.playerH * METER_K * JOHN_M;
+}
+
+/** Full sprite, sign included. The body ends up a little taller than Monchel. */
+const JOHN_H = 1.5 * 1.15;
+const JOHN_NEAR_M = 2.2;
+
+function drawJohn(ctx: CanvasRenderingContext2D, sim: Sim): void {
+  if (sim.phase !== "ready" && sim.phase !== "run" && sim.phase !== "dead") return;
+  const near = sim.worldX + sim.shift >= johnWorldX(sim) - sim.layout.playerH * METER_K * JOHN_NEAR_M;
+  const img = near ? johnFrontImg : johnBackImg;
+  if (!stillReady(img)) return;
+  const L = sim.layout;
+  const sx = worldToScreen(sim, johnWorldX(sim));
+  const h = L.playerH * JOHN_H;
+  const w = h * (img.naturalWidth / img.naturalHeight);
+  if (sx < -w || sx > L.w + w) return;
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(img, sx - w / 2, L.groundY - h, w, h);
+  ctx.restore();
+}
+
 function drawChogFrame(
   ctx: CanvasRenderingContext2D,
   sim: Sim,
@@ -671,7 +739,10 @@ function drawChogFrame(
 function drawChogWorld(ctx: CanvasRenderingContext2D, sim: Sim): void {
   if (sim.phase !== "run" && sim.phase !== "dead") return;
   drawChogFrame(ctx, sim, chogStandImg, chogStandFrame(sim));
+  drawChogFrame(ctx, sim, chogFallImg, chogFallFrame(sim));
   drawChogFrame(ctx, sim, chogDownImg, chogDownFrame(sim));
+  drawChogFrame(ctx, sim, chogWaveImg, chogWaveFrame(sim));
+  drawChogFrame(ctx, sim, chogDownImg, chogDeathFrame(sim));
 }
 
 function drawChogRider(ctx: CanvasRenderingContext2D, sim: Sim): void {
@@ -802,6 +873,29 @@ function drawEarlyBackdrop(ctx: CanvasRenderingContext2D, sim: Sim): boolean {
   return true;
 }
 
+/** Left-edge fade baked into lightspeed.png, as a fraction of its width. */
+const LIGHT_FADE = 220 / 2128;
+
+function drawLightspeed(ctx: CanvasRenderingContext2D, sim: Sim): void {
+  if (!stillReady(lightspeedImg)) return;
+  const L = sim.layout;
+  const top = -80;
+  const drawH = L.groundY - top + 8;
+  const drawW = drawH * (lightspeedImg.naturalWidth / lightspeedImg.naturalHeight);
+  const step = Math.max(8, drawW * (1 - LIGHT_FADE));
+  const scroll = sim.worldX;
+  let x = -((scroll % step) + step) % step - step;
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.fillStyle = "#000";
+  ctx.fillRect(-40, top, L.w + 80, drawH);
+  while (x < L.w + 4) {
+    ctx.drawImage(lightspeedImg, x, top, drawW, drawH);
+    x += step;
+  }
+  ctx.restore();
+}
+
 function streetBand(sim: Sim): number {
   const meters = sim.worldX / (sim.layout.playerH * METER_K);
   const inn = Math.max(0, Math.min(1, (meters - ROBO_M) / 8));
@@ -897,9 +991,13 @@ export function draw(ctx: CanvasRenderingContext2D, view: View, sim: Sim, fx: Fx
   ctx.fillStyle = sky;
   ctx.fillRect(-40, -80, L.w + 80, L.groundY + 80);
 
-  const early = drawEarlyBackdrop(ctx, sim);
-  const stage1 = sim.worldX / (L.playerH * METER_K) < SKATES_M;
-  if (!early) {
+  const metersNow = sim.worldX / (L.playerH * METER_K);
+  const lightspeed = metersNow >= BLUE_M;
+  const early = !lightspeed && drawEarlyBackdrop(ctx, sim);
+  const stage1 = metersNow < SKATES_M;
+  if (lightspeed) {
+    drawLightspeed(ctx, sim);
+  } else if (!early) {
     ctx.fillStyle = SUN;
     ctx.beginPath();
     ctx.arc(L.w * 0.74, L.groundY * 0.42, L.playerH * 0.42, 0, Math.PI * 2);
@@ -912,9 +1010,9 @@ export function draw(ctx: CanvasRenderingContext2D, view: View, sim: Sim, fx: Fx
     ctx.arc(L.w * 0.74 - sim.worldX * 0.12, L.groundY * 0.42, L.playerH * 0.42, 0, Math.PI * 2);
     ctx.fill();
   }
-  clouds(ctx, sim, stage1 && early);
+  if (!lightspeed) clouds(ctx, sim, stage1 && early);
 
-  const mix = streetMix(sim);
+  const mix = lightspeed ? 0 : streetMix(sim);
   const band = streetBand(sim);
   if (mix > 0) {
     ctx.save();
@@ -939,6 +1037,15 @@ export function draw(ctx: CanvasRenderingContext2D, view: View, sim: Sim, fx: Fx
     ctx.fillRect(sx, L.groundY, c.w, L.h - L.groundY + 80);
     ctx.fillStyle = street ? "#2a3142" : "#0a0e14";
     ctx.fillRect(sx + 8, L.groundY + 14, Math.max(0, c.w - 16), L.h);
+    const glowH = Math.min((L.h - L.groundY) * 0.58, L.playerH * 2.6);
+    const glowTop = L.h - glowH;
+    const glow = ctx.createLinearGradient(0, glowTop, 0, L.h);
+    glow.addColorStop(0, "rgba(255, 72, 16, 0)");
+    glow.addColorStop(0.55, "rgba(255, 64, 12, 0.16)");
+    glow.addColorStop(0.84, "rgba(255, 72, 10, 0.42)");
+    glow.addColorStop(1, "rgba(255, 140, 32, 0.72)");
+    ctx.fillStyle = glow;
+    ctx.fillRect(sx, glowTop, c.w, glowH + 48);
     ctx.fillStyle = street ? ROAD_DARK : GRASS_DARK;
     ctx.fillRect(sx - 3, L.groundY - 6, 8, 10);
     ctx.fillRect(sx + c.w - 5, L.groundY - 6, 8, 10);
@@ -978,7 +1085,9 @@ export function draw(ctx: CanvasRenderingContext2D, view: View, sim: Sim, fx: Fx
   });
 
   drawVan(ctx, sim);
+  drawCamper(ctx, sim);
   drawSeal(ctx, sim);
+  drawJohn(ctx, sim);
 
   eachVisible(sim, (c) => {
     if (sim.blueClear > 0 && c.x < sim.blueClear) return;
@@ -1047,8 +1156,8 @@ export function draw(ctx: CanvasRenderingContext2D, view: View, sim: Sim, fx: Fx
 
   const { base, max } = speedRange(L);
   const ratio = max <= base ? 0 : (sim.speed - base) / (max - base);
-  const hot = sim.gear === "bluejet" && sim.phase === "run";
-  if (sim.phase === "run" && (ratio > 0.55 || hot) && !fx.reduced) {
+  const hot = sim.gear === "bluejet" && sim.phase === "run" && metersOf(sim) < BLUE_M;
+  if (sim.phase === "run" && metersOf(sim) < BLUE_M && (ratio > 0.55 || hot) && !fx.reduced) {
     const streaks = hot ? 8 : 4;
     ctx.strokeStyle = hot
       ? "rgba(150, 214, 255, 0.45)"
@@ -1100,7 +1209,7 @@ function drawStageBanner(ctx: CanvasRenderingContext2D, sim: Sim, fx: Fx): void 
   const y = Math.max(L.playerH * 0.9, L.groundY - L.playerH * 3.25);
   let size = L.playerH * 1.05;
   ctx.save();
-  ctx.font = `700 ${size}px Outfit, "Avenir Next", system-ui, sans-serif`;
+  ctx.font = bannerFont(size);
   const wide = ctx.measureText(label).width;
   const limit = L.w * 0.88;
   if (wide > limit) size *= limit / wide;
@@ -1110,22 +1219,53 @@ function drawStageBanner(ctx: CanvasRenderingContext2D, sim: Sim, fx: Fx): void 
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.lineJoin = "round";
-  ctx.font = `700 ${size}px Outfit, "Avenir Next", system-ui, sans-serif`;
-  ctx.lineWidth = Math.max(5, size * 0.16);
-  ctx.strokeStyle = "#121820";
-  ctx.strokeText(label, 0, 0);
-  ctx.fillStyle = BANNER_INK[fx.banner] ?? "#f4efe4";
-  ctx.fillText(label, 0, 0);
-  const note = BANNER_NOTE[fx.banner];
+  const shimmer0 = BANNER_IN + BANNER_HOLD - 0.42;
+  const shimmer = t >= shimmer0 && t <= BANNER_IN + BANNER_HOLD ? (t - shimmer0) / 0.42 : -1;
+  strokeBanner(ctx, label, 0, size, shimmer);
+  const note = fx.banner === "warp" ? undefined : BANNER_NOTE[fx.banner];
   if (note) {
     const noteSize = size * 0.38;
-    ctx.font = `600 ${noteSize}px Outfit, "Avenir Next", system-ui, sans-serif`;
-    ctx.lineWidth = Math.max(3, noteSize * 0.2);
-    ctx.strokeStyle = "#121820";
-    ctx.strokeText(note, 0, size * 0.78);
-    ctx.fillStyle = "#ffffff";
-    ctx.fillText(note, 0, size * 0.78);
+    strokeBanner(ctx, note, size * 0.78, noteSize, shimmer);
   }
+  ctx.restore();
+}
+
+function strokeBanner(ctx: CanvasRenderingContext2D, text: string, y: number, size: number, shimmer: number): void {
+  ctx.font = bannerFont(size);
+  const wide = ctx.measureText(text).width;
+  const purple = Math.max(7, size * 0.1);
+  const black = Math.max(2.2, size * 0.038);
+  ctx.save();
+  ctx.lineJoin = "round";
+  ctx.miterLimit = 2;
+  ctx.lineWidth = purple;
+  ctx.strokeStyle = "#7c3aed";
+  ctx.shadowColor = "rgba(168, 85, 247, 0.9)";
+  ctx.shadowBlur = size * 0.2;
+  ctx.strokeText(text, 0, y);
+  if (shimmer >= 0) {
+    const pad = size * 0.35;
+    const span = wide + pad * 2;
+    const band = Math.max(size * 0.42, 18);
+    const x = -wide / 2 - pad - band + (span + band) * shimmer;
+    ctx.save();
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    ctx.rect(x, y - size * 1.2, band, size * 2.4);
+    ctx.clip();
+    ctx.lineWidth = purple;
+    ctx.strokeStyle = "#f3e8ff";
+    ctx.shadowColor = "#d8b4fe";
+    ctx.shadowBlur = size * 0.28;
+    ctx.strokeText(text, 0, y);
+    ctx.restore();
+  }
+  ctx.shadowBlur = 0;
+  ctx.lineWidth = black;
+  ctx.strokeStyle = "#0a0a0a";
+  ctx.strokeText(text, 0, y);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillText(text, 0, y);
   ctx.restore();
 }
 
@@ -1603,7 +1743,7 @@ function drawParticles(
       const blue = sim.gear === "bluejet";
       ctx.fillStyle = t > 0.5 ? (blue ? BLUE_CORE : FLAME_CORE) : blue ? BLUE_FLAME : FLAME;
     } else if (p.kind === "bit") {
-      ctx.fillStyle = SHELL_LITE;
+      ctx.fillStyle = p.color || SHELL_LITE;
     } else {
       ctx.fillStyle = `rgba(217, 196, 164, ${t})`;
     }
@@ -1621,12 +1761,13 @@ function drawMonchel(ctx: CanvasRenderingContext2D, sim: Sim, fx: Fx): void {
   const posed = spriteFor(sim);
   const sheet = tucked && isReady(shellSlideSheet) ? shellSlideSheet : posed.sheet;
   const frame = tucked && isReady(shellSlideSheet) ? 0 : posed.frame;
-  const img = isReady(sheet) ? sheet.img : null;
+  const deadShell = sim.phase === "dead" && sim.cause !== "gap" && stillReady(deathShellImg);
+  const img = deadShell ? deathShellImg : isReady(sheet) ? sheet.img : null;
   const px = L.playerX + sim.shift;
   const stageScale = sim.gear === "skates" || sim.gear === "robo" || sim.gear === "jet" ? 1.1025 : 1;
-  const h = tucked ? L.playerH * 0.42 * SHELL_SLIDE_SCALE : L.playerH * 0.8 * stageScale;
-  const frameW = img && img.height > 0 ? img.width / sheet.frames : sheet.fallbackW;
-  const frameH = img && img.height > 0 ? img.height : sheet.fallbackH;
+  const h = (tucked ? L.playerH * 0.42 * SHELL_SLIDE_SCALE : L.playerH * 0.8 * stageScale) * (deadShell ? 0.8 : 1);
+  const frameW = deadShell ? deathShellImg.naturalWidth : img && img.height > 0 ? img.width / sheet.frames : sheet.fallbackW;
+  const frameH = deadShell ? deathShellImg.naturalHeight : img && img.height > 0 ? img.height : sheet.fallbackH;
   const aspect = frameW / frameH;
   const w = h * aspect;
   const airborne = sim.phase !== "dead" && !sim.grounded;
@@ -1634,12 +1775,14 @@ function drawMonchel(ctx: CanvasRenderingContext2D, sim: Sim, fx: Fx): void {
   const shadowW = w * (airborne ? 0.28 : 0.42);
 
   ctx.save();
-  ctx.translate(px, shadowY + 3);
-  ctx.scale(1, 0.28);
-  ctx.fillStyle = airborne ? "rgba(12, 16, 24, 0.16)" : "rgba(12, 16, 24, 0.28)";
-  ctx.beginPath();
-  ctx.ellipse(0, 0, shadowW, shadowW, 0, 0, Math.PI * 2);
-  ctx.fill();
+  if (!sim.pitFall) {
+    ctx.translate(px, shadowY + 3);
+    ctx.scale(1, 0.28);
+    ctx.fillStyle = airborne ? "rgba(12, 16, 24, 0.16)" : "rgba(12, 16, 24, 0.28)";
+    ctx.beginPath();
+    ctx.ellipse(0, 0, shadowW, shadowW, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
   ctx.restore();
 
   let extraY = 0;
@@ -1671,10 +1814,11 @@ function drawMonchel(ctx: CanvasRenderingContext2D, sim: Sim, fx: Fx): void {
 
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.imageSmoothingEnabled = tucked;
+  ctx.imageSmoothingEnabled = tucked || deadShell;
   const pixelCtx = ctx as CanvasRenderingContext2D & { webkitImageSmoothingEnabled?: boolean };
-  pixelCtx.webkitImageSmoothingEnabled = !tucked;
-  if (tucked && img) ctx.drawImage(img, 0, 0, img.width, img.height, left, top, dw, dh);
+  pixelCtx.webkitImageSmoothingEnabled = !(tucked || deadShell);
+  if (deadShell) ctx.drawImage(deathShellImg, left, top, dw, dh);
+  else if (tucked && img) ctx.drawImage(img, 0, 0, img.width, img.height, left, top, dw, dh);
   else if (bitmap) ctx.drawImage(bitmap, left, top);
   else if (img) {
     const fw = img.width / sheet.frames;

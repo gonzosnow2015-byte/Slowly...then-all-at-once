@@ -3,7 +3,12 @@ import { describe, it } from "node:test";
 import {
   AIR_TIME,
   BLUE_M,
+  WARP_M,
   createSim,
+  chogDeathFrame,
+  chogRideFrame,
+  chogStandFrame,
+  CHOG_FALL_T,
   crowHitBox,
   crowMotionDrop,
   eachChunk,
@@ -13,6 +18,7 @@ import {
   gearFor,
   holdAirTime,
   JET_M,
+  JOHN_M,
   jumpNow,
   SHELL_SLIDES,
   swipePopStrength,
@@ -147,6 +153,17 @@ describe("monchel runner", () => {
     assert.ok(after > speedAt(x(JET_M), layout) * 1.2);
   });
 
+  it("starts stage 6 after 100 m of stage 5 at double speed", () => {
+    const layout = layoutFrom(1280, 800);
+    const x = (m: number) => layout.playerH * METER_K * m;
+    assert.equal(gearFor(WARP_M), "bluejet");
+    const stage5 = speedAt(x(BLUE_M), layout);
+    const still5 = speedAt(x(WARP_M - 1), layout);
+    const stage6 = speedAt(x(WARP_M), layout);
+    assert.ok(still5 < stage5 * 1.4, `late stage 5 ${still5} vs ${stage5}`);
+    assert.ok(Math.abs(stage6 / stage5 - 2) < 0.02, `stage 6 ${stage6} vs ${stage5}`);
+  });
+
   it("scales jump height with how long the button is held", () => {
     const tap = peak(2);
     const mid = peak(Math.round(JUMP_HOLD * 30));
@@ -156,6 +173,29 @@ describe("monchel runner", () => {
     assert.ok(full > mid * 1.2, `full ${full} mid ${mid}`);
     assert.ok(full > tap * 2.4, `full ${full} tap ${tap}`);
     assert.ok(holdAirTime(JUMP_HOLD) > holdAirTime(1 / 60) * 1.6);
+  });
+
+  it("falls through a hole before the death screen", () => {
+    const layout = layoutFrom(390, 844);
+    const sim = createSim(layout, { seed: 1, best: 0 });
+    sim.phase = "run";
+    sim.y = layout.groundY + layout.playerH * 0.5;
+    sim.grounded = false;
+    sim.vy = 40;
+    const x0 = sim.worldX;
+    tick(sim, 1 / 60, false);
+    assert.equal(sim.phase, "run");
+    assert.equal(sim.pitFall, true);
+    let ticks = 0;
+    while (sim.phase === "run" && ticks < 120) {
+      tick(sim, 1 / 60, false);
+      ticks++;
+    }
+    assert.equal(sim.phase, "dead");
+    assert.equal(sim.cause, "gap");
+    assert.ok(sim.y - layout.playerH * 0.9 > layout.h, `y ${sim.y}`);
+    assert.ok(Math.abs(sim.worldX - x0) < 2, `scrolled ${sim.worldX - x0}`);
+    assert.ok(ticks > 6 && ticks < 80, `ticks ${ticks}`);
   });
 
   it("dies if he never jumps", () => {
@@ -652,7 +692,7 @@ describe("monchel runner", () => {
     const sim = createSim(layout, { seed: 3, best: 0 });
     const unit = layout.playerH * METER_K;
     const chunk = sim.slots[0]!;
-    chunk.x = unit * ROBO_M;
+    chunk.x = unit * SKATES_M;
     chunk.w = unit * 80;
     chunk.gap = false;
     chunk.barrierH = 0;
@@ -671,7 +711,7 @@ describe("monchel runner", () => {
     sim.rats = [];
     sim.coyotes = [];
     sim.phase = "run";
-    sim.worldX = unit * (ROBO_M + 3);
+    sim.worldX = unit * (SKATES_M + 3);
     sim.y = layout.groundY;
     sim.grounded = true;
     sim.vy = 0;
@@ -679,7 +719,7 @@ describe("monchel runner", () => {
     assert.equal(sim.chog, "stand");
     assert.equal(sim.chogs, 0);
     const meters = sim.chogX / unit;
-    assert.ok(meters > ROBO_M + 2 && meters < ROBO_M + 28, `spawn ${meters}`);
+    assert.ok(meters > SKATES_M + 2 && meters < SKATES_M + 28 && meters < ROBO_M, `spawn ${meters}`);
     sim.worldX = sim.chogX;
     sim.shift = 0;
     sim.y = layout.groundY;
@@ -697,12 +737,126 @@ describe("monchel runner", () => {
     chunk.platDrop = layout.playerH * 0.9;
     tick(sim, 1 / 60, false);
     assert.equal(sim.phase, "run", sim.cause ?? "");
-    assert.equal(sim.chog, "down");
+    assert.equal(sim.chog, "ride");
+    chunk.platW = 0;
+    chunk.platDrop = 0;
+    chunk.airBob = 0;
+    chunk.airW = layout.playerH;
+    chunk.airH = layout.playerH * 0.2;
+    chunk.airOff = sim.worldX - chunk.x - chunk.airW / 2;
+    chunk.airDrop = layout.playerH * 0.62;
+    tick(sim, 1 / 60, false);
+    assert.equal(sim.phase, "run", sim.cause ?? "");
+    assert.equal(sim.chog, "fall");
     assert.equal(sim.chogs, 1);
+    chunk.airW = 0;
+    chunk.airH = 0;
     const lying = sim.chogX;
+    let drops = 0;
+    while (sim.chog === "fall" && drops < 90) {
+      tick(sim, 1 / 60, false);
+      drops++;
+    }
+    assert.ok(drops >= 24 && drops <= 32, `drop ticks ${drops}`);
+    assert.equal(sim.chog, "down");
+    assert.equal(sim.chogX, lying);
+    assert.ok(Math.abs(drops / 60 - CHOG_FALL_T) < 0.03);
     tick(sim, 1 / 60, false);
     assert.equal(sim.chog, "down");
     assert.equal(sim.chogX, lying);
+  });
+
+  it("can stand Chog on a floating platform or the ground", () => {
+    const layout = layoutFrom(390, 844);
+    const unit = layout.playerH * METER_K;
+    let onPlat = 0;
+    let onGround = 0;
+    for (let seed = 1; seed <= 24; seed++) {
+      const sim = createSim(layout, { seed, best: 0 });
+      const chunk = sim.slots[0]!;
+      chunk.x = unit * (SKATES_M + 4);
+      chunk.w = unit * 22;
+      chunk.gap = false;
+      chunk.barrierH = 0;
+      chunk.platW = unit * 4;
+      chunk.platOff = unit * 8;
+      chunk.platDrop = layout.playerH * 1.1;
+      chunk.plat2W = 0;
+      chunk.plat3W = 0;
+      chunk.plat4W = 0;
+      sim.head = 0;
+      sim.count = 1;
+      sim.phase = "run";
+      sim.worldX = unit * (SKATES_M + 3);
+      tick(sim, 1 / 60, false);
+      assert.equal(sim.chog, "stand", `seed ${seed}`);
+      const frame = chogStandFrame(sim);
+      assert.ok(frame);
+      const feet = frame!.top + frame!.h;
+      if (Math.abs(feet - (layout.groundY - chunk.platDrop)) < 1) onPlat++;
+      else if (Math.abs(feet - layout.groundY) < 1) onGround++;
+      else assert.fail(`seed ${seed} feet ${feet}`);
+    }
+    assert.ok(onPlat > 0, `platforms ${onPlat}`);
+    assert.ok(onGround > 0, `ground ${onGround}`);
+  });
+
+  it("waves Chog off at the Stage 3 Chog Club sign", () => {
+    const layout = layoutFrom(390, 844);
+    const sim = createSim(layout, { seed: 1, best: 0 });
+    const unit = layout.playerH * METER_K;
+    const chunk = sim.slots[0]!;
+    chunk.x = 0;
+    chunk.w = unit * 280;
+    chunk.gap = false;
+    chunk.barrierH = 0;
+    chunk.barrierW = 0;
+    chunk.airW = 0;
+    chunk.airH = 0;
+    chunk.air2W = 0;
+    chunk.platW = 0;
+    chunk.plat2W = 0;
+    chunk.plat3W = 0;
+    chunk.plat4W = 0;
+    chunk.letN = 0;
+    sim.head = 0;
+    sim.count = 1;
+    sim.cursor = chunk.x + chunk.w;
+    sim.rats = [];
+    sim.coyotes = [];
+    sim.phase = "run";
+    sim.chog = "ride";
+    sim.chogs = 1;
+    sim.y = layout.groundY;
+    sim.grounded = true;
+    sim.vy = 0;
+    sim.shift = 0;
+    sim.worldX = unit * 231;
+    tick(sim, 1 / 60, false);
+    assert.equal(sim.chog, "ride");
+    assert.ok(metersOf(sim) < 232);
+    sim.worldX = unit * 232;
+    tick(sim, 1 / 60, false);
+    assert.equal(sim.phase, "run", sim.cause ?? "");
+    assert.equal(sim.chog, "wave");
+    assert.ok(metersOf(sim) >= 232);
+    const left = sim.chogX;
+    tick(sim, 1 / 60, false);
+    assert.equal(sim.chog, "wave");
+    assert.equal(sim.chogX, left);
+    sim.phase = "dead";
+    sim.chog = "wave";
+    assert.equal(chogDeathFrame(sim), null);
+    sim.chog = "down";
+    assert.equal(chogDeathFrame(sim), null);
+    sim.chog = "stand";
+    assert.equal(chogDeathFrame(sim), null);
+    sim.chog = "ride";
+    const beside = chogDeathFrame(sim);
+    assert.ok(beside);
+    assert.equal(chogRideFrame(sim), null);
+    assert.ok(beside.top + beside.h === sim.layout.groundY);
+    assert.ok(beside.cx < sim.worldX + sim.shift);
   });
 
   it("puts the same lettuce count in stages 1–4 and none in stage 5", () => {
@@ -985,5 +1139,23 @@ describe("monchel runner", () => {
     const full = rise(Math.ceil(JUMP_HOLD * 60) + 2);
     assert.ok(tap > 4, `tap ${tap}`);
     assert.ok(full > tap * 2, `full ${full} tap ${tap}`);
+  });
+
+  it("keeps solid ground under John on every re-roll", () => {
+    const layouts = [layoutFrom(390, 844), layoutFrom(1280, 800)];
+    for (const layout of layouts) {
+      const unit = layout.playerH * METER_K;
+      const cx = unit * JOHN_M;
+      const half = layout.playerH * 0.7;
+      for (let seed = 1; seed <= 40; seed++) {
+        const sim = createSim(layout, { seed, best: 0 });
+        extendCourse(sim, unit * (JOHN_M + 8));
+        eachChunk(sim, (c) => {
+          if (!c.gap) return;
+          const hits = c.x < cx + half && c.x + c.w > cx - half;
+          assert.equal(hits, false, `seed ${seed} gap ${c.x}..${c.x + c.w} under John`);
+        });
+      }
+    }
   });
 });

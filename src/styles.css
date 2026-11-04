@@ -41,6 +41,125 @@
   padding-left: max(1rem, env(safe-area-inset-left));
 }
 
+.font-bangers {
+  font-family: "Bangers", system-ui, sans-serif;
+}
+
 .safe-bottom {
   bottom: max(1.25rem, env(safe-area-inset-bottom));
+}
+
+.chog-banner {
+  top: 37%;
+  padding-inline: 0.75rem;
+  font-family: "Bangers", system-ui, sans-serif;
+  font-size: clamp(2.15rem, 8.4vw, 3.7rem);
+  line-height: 1.05;
+  color: #fff;
+  paint-order: stroke fill;
+  -webkit-text-stroke: 2.5px #111;
+  animation: chog-banner 4.4s ease forwards;
+}
+
+.chog-banner span {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  color: #fff;
+  paint-order: stroke fill;
+  -webkit-text-stroke: 13px #6d28d9;
+  text-shadow:
+    0 0 6px #a855f7,
+    0 0 14px #6d28d9,
+    0 0 26px #4c1d95;
+}
+
+@keyframes chog-banner {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.72);
+  }
+  12% {
+    opacity: 1;
+    transform: translateY(0) scale(1.08);
+  }
+  18% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  80% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-12px) scale(0.94);
+  }
+}
+
+.loui-pop {
+  animation: loui-rise 0.55s cubic-bezier(0.16, 0.84, 0.32, 1) both;
+}
+
+.loui-frame {
+  opacity: 0;
+  animation: loui-flicker 1.26s linear infinite;
+}
+
+@keyframes loui-flicker {
+  0%,
+  11.111% {
+    opacity: 1;
+  }
+  11.112%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes loui-rise {
+  from {
+    transform: translateY(110%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+.death-copy {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: safe center;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-inline: 1.5rem;
+  text-align: center;
+}
+
+.purged {
+  right: 18vh;
+  bottom: 7.5vh;
+  font-family: "Bangers", system-ui, sans-serif;
+  font-size: clamp(2rem, 8vw, 2.9rem);
+  line-height: 0.9;
+  letter-spacing: 0.03em;
+  background: linear-gradient(180deg, #fff6c4 0%, #ffd24a 42%, #ff7a18 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  -webkit-text-stroke: 2px #ffedd5;
+  paint-order: stroke fill;
+}
+
+.purged span {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  color: #ff8a1e;
+  -webkit-text-fill-color: #ff8a1e;
+  -webkit-text-stroke: 8px #c2410c;
+  paint-order: stroke fill;
 }
